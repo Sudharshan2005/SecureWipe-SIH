@@ -23,11 +23,10 @@ mongoose.connect(MONGODB_URI)
 
 // User Schema
 const userSchema = new mongoose.Schema({
-  email: {
+  username: {
     type: String,
     required: true,
     unique: true,
-    lowercase: true,
     trim: true
   },
   password: {
@@ -37,7 +36,7 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['individual', 'organization-manager', 'organization-employee'],
+    enum: ['individual', 'organization-ceo', 'organization-employee'],
     required: true
   },
   organizationId: {
@@ -56,6 +55,35 @@ const userSchema = new mongoose.Schema({
   lastLogin: {
     type: Date,
     default: null
+  }
+});
+
+// Note: Mongoose will create a unique index from the schema definition
+
+// Session Schema for tracking active sessions
+const sessionSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  sessionId: {
+    type: String,
+    required: true,
+    unique: true
+  },
+  token: {
+    type: String,
+    required: true
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+    expires: 86400 // Session expires after 24 hours
+  },
+  lastActive: {
+    type: Date,
+    default: Date.now
   }
 });
 
@@ -86,18 +114,30 @@ const organizationSchema = new mongoose.Schema({
 
 // Models
 const User = mongoose.model('User', userSchema);
+const Session = mongoose.model('Session', sessionSchema);
 const Organization = mongoose.model('Organization', organizationSchema);
+
+// Drop legacy email index if it exists (prevents duplicate-key on email:null)
+User.collection.dropIndex('email_1').catch(() => {
+  // index might not exist; ignore
+});
 
 // JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
 // Helper function to generate token
-const generateToken = (userId, email, role) => {
+const generateToken = (userId, username, role) => {
   return jwt.sign(
-    { userId, email, role },
+    { userId, username, role },
     JWT_SECRET,
     { expiresIn: '24h' }
   );
+};
+
+// Helper function to generate session ID
+const generateSessionId = () => {
+  const crypto = require('crypto');
+  return crypto.randomBytes(32).toString('hex');
 };
 
 // Middleware to verify token
@@ -117,31 +157,31 @@ const verifyToken = (req, res, next) => {
   }
 };
 
-// Check if email exists
-const checkEmailExists = async (email) => {
-  const user = await User.findOne({ email: email.toLowerCase() });
+// Check if username exists
+const checkUsernameExists = async (username) => {
+  const user = await User.findOne({ username: username });
   return !!user;
 };
 
 // Signup endpoint
 app.post('/api/auth/signup', async (req, res) => {
   try {
-    const { email, password, role } = req.body;
+    const { username, password, role } = req.body;
     
     // Validate input
-    if (!email || !password || !role) {
-      return res.status(400).json({ error: 'Email, password, and role are required' });
+    if (!username || !password || !role) {
+      return res.status(400).json({ error: 'Username, password, and role are required' });
     }
     
     // Validate role
-    const validRoles = ['individual', 'organization-manager', 'organization-employee'];
+    const validRoles = ['individual', 'organization-ceo', 'organization-employee'];
     if (!validRoles.includes(role)) {
-      return res.status(400).json({ error: 'Invalid role. Must be individual, organization-manager, or organization-employee' });
+      return res.status(400).json({ error: 'Invalid role. Must be individual, organization-ceo, or organization-employee' });
     }
     
-    // Check if email already exists
-    if (await checkEmailExists(email)) {
-      return res.status(400).json({ error: 'Email already registered' });
+    // Check if username already exists
+    if (await checkUsernameExists(username)) {
+      return res.status(400).json({ error: 'Username already exists' });
     }
     
     // Hash password
@@ -149,15 +189,15 @@ app.post('/api/auth/signup', async (req, res) => {
     
     // Create user
     const user = new User({
-      email: email.toLowerCase(),
+      username: username,
       password: hashedPassword,
       role: role
     });
     
-    // If organization manager, create organization
-    if (role === 'organization-manager') {
+    // If organization CEO, create organization
+    if (role === 'organization-ceo') {
       const organization = new Organization({
-        name: `${email.split('@')[0]}'s Organization`,
+        name: `${username}'s Organization`,
         createdBy: user._id
       });
       await organization.save();
@@ -167,14 +207,24 @@ app.post('/api/auth/signup', async (req, res) => {
     await user.save();
     
     // Generate token
-    const token = generateToken(user._id, user.email, user.role);
+    const token = generateToken(user._id, user.username, user.role);
+    const sessionId = generateSessionId();
+    
+    // Create session
+    const session = new Session({
+      userId: user._id,
+      sessionId: sessionId,
+      token: token
+    });
+    await session.save();
     
     res.status(201).json({
       message: 'User created successfully',
       token,
+      sessionId,
       user: {
         id: user._id,
-        email: user.email,
+        username: user.username,
         role: user.role,
         organizationId: user.organizationId
       }
@@ -189,17 +239,17 @@ app.post('/api/auth/signup', async (req, res) => {
 // Login endpoint
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { username, password } = req.body;
     
     // Validate input
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required' });
     }
     
     // Find user
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ username: username });
     if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: 'Invalid username or password' });
     }
     
     // Check if user is active
@@ -210,22 +260,33 @@ app.post('/api/auth/login', async (req, res) => {
     // Verify password
     const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: 'Invalid username or password' });
     }
     
     // Update last login
     user.lastLogin = new Date();
     await user.save();
     
-    // Generate token
-    const token = generateToken(user._id, user.email, user.role);
+    // Generate token and session ID
+    const token = generateToken(user._id, user.username, user.role);
+    const sessionId = generateSessionId();
+    
+    // Create or update session
+    await Session.findOneAndDelete({ userId: user._id }); // Remove old session if exists
+    const session = new Session({
+      userId: user._id,
+      sessionId: sessionId,
+      token: token
+    });
+    await session.save();
     
     res.json({
       message: 'Login successful',
       token,
+      sessionId,
       user: {
         id: user._id,
-        email: user.email,
+        username: user.username,
         role: user.role,
         organizationId: user.organizationId
       }
@@ -249,7 +310,7 @@ app.post('/api/auth/verify', verifyToken, async (req, res) => {
       valid: true,
       user: {
         id: user._id,
-        email: user.email,
+        username: user.username,
         role: user.role,
         organizationId: user.organizationId
       }
@@ -257,6 +318,41 @@ app.post('/api/auth/verify', verifyToken, async (req, res) => {
     
   } catch (error) {
     console.error('Token verification error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Validate session endpoint
+app.post('/api/auth/validate-session', async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    
+    if (!sessionId) {
+      return res.status(400).json({ error: 'Session ID is required' });
+    }
+    
+    const session = await Session.findOne({ sessionId }).populate('userId', 'username role organizationId');
+    
+    if (!session) {
+      return res.status(401).json({ error: 'Invalid session' });
+    }
+    
+    // Update last active
+    session.lastActive = new Date();
+    await session.save();
+    
+    res.json({
+      valid: true,
+      user: {
+        id: session.userId._id,
+        username: session.userId.username,
+        role: session.userId.role,
+        organizationId: session.userId.organizationId
+      }
+    });
+    
+  } catch (error) {
+    console.error('Session validation error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -298,8 +394,12 @@ app.post('/api/auth/keep-alive', verifyToken, async (req, res) => {
 // Logout endpoint
 app.post('/api/auth/logout', verifyToken, async (req, res) => {
   try {
-    // Note: For JWT, logout is handled client-side by removing the token
-    // This endpoint can be used for server-side cleanup if needed
+    const { sessionId } = req.body;
+    
+    // Delete session from database
+    if (sessionId) {
+      await Session.findOneAndDelete({ sessionId });
+    }
     
     res.json({ message: 'Logout successful' });
     
