@@ -1421,7 +1421,6 @@ app.post('/api/s3/upload', async (req, res) => {
         console.log('\n📄 Processing file:', fileInfo);
         
         const filePath = fileInfo.path;
-        filePath = '/Users/sudharshan/Documents/sih/' + filePath;
         const fileName = fileInfo.name || path.basename(filePath || '');
         
         if (!filePath) {
