@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 const PDFDocument = require('pdfkit');
 const winston = require('winston');
 const os = require('os');
+const s3Service = require('./s3-service');
 
 require('dotenv').config();
 
@@ -1620,6 +1621,186 @@ app.get('/api/cleanup-sessions', async (req, res) => {
       error: 'Cleanup failed',
       message: error.message
     });
+  }
+});
+
+/**
+ * Upload important files to S3 before wipe
+ */
+app.post('/api/s3/upload', async (req, res) => {
+  try {
+    const { files, password, sessionId } = req.body;
+    
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ error: 'No files specified' });
+    }
+    
+    if (!sessionId) {
+      return res.status(400).json({ error: 'Session ID required' });
+    }
+    
+    // Get session to verify
+    let session = wipeSessions.get(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    const uploadResults = [];
+    const errors = [];
+    
+    for (const fileInfo of files) {
+      try {
+        const { path: filePath, name: fileName } = fileInfo;
+        
+        if (!filePath || !fileName) {
+          errors.push({ file: fileInfo, error: 'Missing path or name' });
+          continue;
+        }
+        
+        // Validate file exists
+        const fullPath = path.join(BASE_DIRECTORY, filePath);
+        if (!(await fs.pathExists(fullPath))) {
+          errors.push({ file: fileInfo, error: 'File not found' });
+          continue;
+        }
+        
+        // Upload to S3
+        const result = await s3Service.uploadToS3(fullPath, fileName, password);
+        
+        if (result.success) {
+          uploadResults.push({
+            originalPath: filePath,
+            originalName: fileName,
+            s3Url: result.fileUrl,
+            s3Key: result.fileKey,
+            encrypted: result.encrypted,
+            size: result.size,
+            uploadedAt: result.uploadedAt,
+            isRealS3: result.isRealS3
+          });
+        } else {
+          errors.push({ file: fileInfo, error: result.error });
+        }
+      } catch (error) {
+        errors.push({ file: fileInfo, error: error.message });
+      }
+    }
+    
+    // Store upload info in session
+    if (uploadResults.length > 0) {
+      if (!session.s3Uploads) {
+        session.s3Uploads = [];
+      }
+      session.s3Uploads.push(...uploadResults);
+      updateWipeSession(sessionId, { s3Uploads: session.s3Uploads });
+    }
+    
+    res.json({
+      success: true,
+      uploaded: uploadResults.length,
+      failed: errors.length,
+      uploads: uploadResults,
+      errors: errors,
+      sessionId: sessionId,
+      note: uploadResults[0]?.isRealS3 ? 'Files uploaded to AWS S3' : 'Files saved locally (S3 simulation)'
+    });
+    
+  } catch (error) {
+    logger.error('S3 upload error:', error);
+    res.status(500).json({ 
+      error: 'Failed to upload files',
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * Get S3 uploads for a session
+ */
+app.get('/api/s3/uploads/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    let session = wipeSessions.get(sessionId);
+    if (!session) {
+      session = await loadSessionFromFile(sessionId);
+    }
+    
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    const uploads = session.s3Uploads || [];
+    
+    // Get fresh info for each upload
+    const uploadsWithInfo = await Promise.all(
+      uploads.map(async (upload) => {
+        const info = await s3Service.getS3FileInfo(upload.s3Key);
+        return {
+          ...upload,
+          s3Info: info
+        };
+      })
+    );
+    
+    res.json({
+      sessionId,
+      totalUploads: uploads.length,
+      uploads: uploadsWithInfo
+    });
+    
+  } catch (error) {
+    logger.error('Error getting S3 uploads:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Get download URL for S3 file
+ */
+app.get('/api/s3/download/:sessionId/:fileIndex', async (req, res) => {
+  try {
+    const { sessionId, fileIndex } = req.params;
+    const index = parseInt(fileIndex);
+    
+    let session = wipeSessions.get(sessionId);
+    if (!session) {
+      session = await loadSessionFromFile(sessionId);
+    }
+    
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    const uploads = session.s3Uploads || [];
+    if (index < 0 || index >= uploads.length) {
+      return res.status(404).json({ error: 'File not found in session' });
+    }
+    
+    const upload = uploads[index];
+    
+    // Generate presigned URL if using real S3
+    if (upload.isRealS3) {
+      const downloadUrl = await s3Service.generatePresignedUrl(upload.s3Key, 3600); // 1 hour expiry
+      if (downloadUrl) {
+        return res.json({
+          downloadUrl,
+          fileName: upload.originalName,
+          expiresIn: 3600
+        });
+      }
+    }
+    
+    // For simulated S3, return the local path info
+    res.json({
+      fileUrl: upload.s3Url,
+      fileName: upload.originalName,
+      note: upload.isRealS3 ? 'Download from S3' : 'File saved locally (development mode)'
+    });
+    
+  } catch (error) {
+    logger.error('Error generating download URL:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

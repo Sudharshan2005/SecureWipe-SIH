@@ -30,7 +30,7 @@ import {
   FiList,
   FiCloud
 } from 'react-icons/fi';
-import S3UploadModal from '../components/S3UploadModal';
+import S3UploadModal from '../../components/S3UploadModal';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 
