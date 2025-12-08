@@ -33,20 +33,36 @@ import {
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 
 // File Browser Modal Component
-const FileBrowserModal = ({ isOpen, onClose, onSelect, currentPath = '', files = [] }) => {
+// File Browser Modal Component - UPDATED VERSION
+const FileBrowserModal = ({ 
+  isOpen, 
+  onClose, 
+  onSelect, 
+  currentPath = '', 
+  files = [],
+  onNavigate,
+  onNavigateUp,
+  baseDirectory
+}) => {
   const [selectedItems, setSelectedItems] = useState([]);
   const [viewMode, setViewMode] = useState('list');
 
   if (!isOpen) return null;
 
   const handleItemClick = (item) => {
-    setSelectedItems(prev => {
-      if (prev.some(i => i.path === item.path)) {
-        return prev.filter(i => i.path !== item.path);
-      } else {
-        return [...prev, item];
-      }
-    });
+    if (item.type === 'directory') {
+      // Navigate into the directory
+      onNavigate(item.path);
+    } else {
+      // Toggle file selection
+      setSelectedItems(prev => {
+        if (prev.some(i => i.path === item.path)) {
+          return prev.filter(i => i.path !== item.path);
+        } else {
+          return [...prev, item];
+        }
+      });
+    }
   };
 
   const handleConfirm = () => {
@@ -59,14 +75,29 @@ const FileBrowserModal = ({ isOpen, onClose, onSelect, currentPath = '', files =
     }
   };
 
+  const handleSelectAll = () => {
+    const selectableFiles = files.filter(item => item.type === 'file');
+    if (selectedItems.length === selectableFiles.length) {
+      setSelectedItems([]);
+    } else {
+      setSelectedItems(selectableFiles);
+    }
+  };
+
+  // Get breadcrumb path segments
+  const getBreadcrumbs = () => {
+    const segments = currentPath ? currentPath.split('/').filter(s => s) : [];
+    return segments;
+  };
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
         <div className="bg-gray-800 text-white p-6">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-2xl font-bold">Browse Files</h2>
-              <p className="text-gray-300 mt-1">Select files and folders to wipe</p>
+              <p className="text-gray-300 mt-1">Navigate and select files to wipe</p>
             </div>
             <button
               onClick={onClose}
@@ -76,9 +107,44 @@ const FileBrowserModal = ({ isOpen, onClose, onSelect, currentPath = '', files =
             </button>
           </div>
           
+          {/* Breadcrumb Navigation */}
+          <div className="flex items-center gap-2 text-sm">
+            <button
+              onClick={() => onNavigate('')}
+              className="flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-700"
+            >
+              <FiFolder className="w-3 h-3" />
+              <span>Root</span>
+            </button>
+            
+            {getBreadcrumbs().map((segment, index, array) => {
+              const path = array.slice(0, index + 1).join('/');
+              return (
+                <div key={path} className="flex items-center gap-1">
+                  <span className="text-gray-400">/</span>
+                  <button
+                    onClick={() => onNavigate(path)}
+                    className="px-2 py-1 rounded hover:bg-gray-700"
+                  >
+                    {segment}
+                  </button>
+                </div>
+              );
+            })}
+            
+            {currentPath && (
+              <button
+                onClick={onNavigateUp}
+                className="ml-2 px-2 py-1 bg-gray-700 rounded hover:bg-gray-600 text-xs"
+              >
+                Go Up
+              </button>
+            )}
+          </div>
+          
           <div className="mt-4 flex items-center justify-between">
             <div className="text-sm text-gray-300">
-              {selectedItems.length} item(s) selected
+              {selectedItems.length} file(s) selected • {files.length} items
             </div>
             <div className="flex items-center space-x-2">
               <button
@@ -91,7 +157,7 @@ const FileBrowserModal = ({ isOpen, onClose, onSelect, currentPath = '', files =
           </div>
         </div>
 
-        <div className="p-6 overflow-y-auto max-h-[60vh]">
+        <div className="flex-1 p-6 overflow-y-auto">
           {files.length === 0 ? (
             <div className="text-center py-12">
               <FiFolder className="w-16 h-16 text-gray-400 mx-auto mb-4" />
@@ -100,83 +166,126 @@ const FileBrowserModal = ({ isOpen, onClose, onSelect, currentPath = '', files =
             </div>
           ) : viewMode === 'list' ? (
             <div className="space-y-2">
-              {files.map((item) => (
-                <div
-                  key={item.path}
-                  onClick={() => handleItemClick(item)}
-                  className={`flex items-center p-4 rounded-lg border cursor-pointer transition-all hover:bg-gray-50 ${
-                    selectedItems.some(i => i.path === item.path)
-                      ? 'bg-blue-50 border-blue-300'
-                      : 'border-gray-200'
-                  }`}
-                >
-                  <div className={`p-3 rounded-lg mr-4 ${
-                    item.type === 'file' ? 'bg-blue-100' : 'bg-green-100'
-                  }`}>
-                    {item.type === 'file' ? (
-                      <FiFile className="w-6 h-6 text-blue-600" />
-                    ) : (
-                      <FiFolder className="w-6 h-6 text-green-600" />
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-gray-900">{item.name}</h3>
-                    <div className="flex items-center space-x-4 mt-1 text-sm text-gray-600">
-                      <span className="capitalize">{item.type}</span>
-                      {item.type === 'directory' && (
-                        <span className="flex items-center">
-                          <FiFolder className="w-3 h-3 mr-1" />
-                          Contains files
-                        </span>
+              {files.map((item) => {
+                const isSelected = selectedItems.some(i => i.path === item.path);
+                const isDirectory = item.type === 'directory';
+                
+                return (
+                  <div
+                    key={item.path}
+                    onClick={() => handleItemClick(item)}
+                    className={`flex items-center p-4 rounded-lg border cursor-pointer transition-all ${
+                      isSelected
+                        ? 'bg-blue-50 border-blue-300'
+                        : isDirectory
+                        ? 'hover:bg-green-50 border-green-200'
+                        : 'hover:bg-gray-50 border-gray-200'
+                    }`}
+                  >
+                    <div className={`p-3 rounded-lg mr-4 ${
+                      isDirectory ? 'bg-green-100' : 'bg-blue-100'
+                    }`}>
+                      {isDirectory ? (
+                        <FiFolder className="w-6 h-6 text-green-600" />
+                      ) : (
+                        <FiFile className="w-6 h-6 text-blue-600" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-gray-900">{item.name}</h3>
+                      <div className="flex items-center space-x-4 mt-1 text-sm text-gray-600">
+                        <span className="capitalize">{item.type}</span>
+                        {isDirectory ? (
+                          <span className="flex items-center">
+                            <FiFolder className="w-3 h-3 mr-1" />
+                            Click to open
+                          </span>
+                        ) : (
+                          <span className="text-xs">{item.path}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {isDirectory ? (
+                        <span className="text-xs text-gray-500">Open</span>
+                      ) : (
+                        <>
+                          {isSelected ? (
+                            <div className="p-2 bg-blue-100 rounded-full">
+                              <FiCheck className="w-5 h-5 text-blue-600" />
+                            </div>
+                          ) : (
+                            <div className="p-2 border-2 border-gray-300 rounded-full">
+                              <div className="w-3 h-3"></div>
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
-                  {selectedItems.some(i => i.path === item.path) && (
-                    <div className="p-2 bg-blue-100 rounded-full">
-                      <FiCheck className="w-5 h-5 text-blue-600" />
-                    </div>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {files.map((item) => (
-                <div
-                  key={item.path}
-                  onClick={() => handleItemClick(item)}
-                  className={`p-4 rounded-lg border cursor-pointer transition-all hover:bg-gray-50 flex flex-col items-center text-center ${
-                    selectedItems.some(i => i.path === item.path)
-                      ? 'bg-blue-50 border-blue-300'
-                      : 'border-gray-200'
-                  }`}
-                >
-                  <div className={`p-4 rounded-lg mb-3 ${
-                    item.type === 'file' ? 'bg-blue-100' : 'bg-green-100'
-                  }`}>
-                    {item.type === 'file' ? (
-                      <FiFile className="w-8 h-8 text-blue-600" />
-                    ) : (
-                      <FiFolder className="w-8 h-8 text-green-600" />
+              {files.map((item) => {
+                const isSelected = selectedItems.some(i => i.path === item.path);
+                const isDirectory = item.type === 'directory';
+                
+                return (
+                  <div
+                    key={item.path}
+                    onClick={() => handleItemClick(item)}
+                    className={`p-4 rounded-lg border cursor-pointer transition-all flex flex-col items-center text-center ${
+                      isSelected
+                        ? 'bg-blue-50 border-blue-300'
+                        : isDirectory
+                        ? 'hover:bg-green-50 border-green-200'
+                        : 'hover:bg-gray-50 border-gray-200'
+                    }`}
+                  >
+                    <div className={`p-4 rounded-lg mb-3 ${
+                      isDirectory ? 'bg-green-100' : 'bg-blue-100'
+                    }`}>
+                      {isDirectory ? (
+                        <FiFolder className="w-8 h-8 text-green-600" />
+                      ) : (
+                        <FiFile className="w-8 h-8 text-blue-600" />
+                      )}
+                    </div>
+                    <h3 className="font-semibold text-gray-900 truncate w-full">{item.name}</h3>
+                    <p className="text-xs text-gray-600 mt-1 capitalize">{item.type}</p>
+                    {!isDirectory && isSelected && (
+                      <div className="mt-2 p-1 bg-blue-100 rounded-full">
+                        <FiCheck className="w-4 h-4 text-blue-600" />
+                      </div>
+                    )}
+                    {isDirectory && (
+                      <div className="mt-2 text-xs text-gray-500">
+                        Click to open
+                      </div>
                     )}
                   </div>
-                  <h3 className="font-semibold text-gray-900 truncate w-full">{item.name}</h3>
-                  <p className="text-xs text-gray-600 mt-1 capitalize">{item.type}</p>
-                  {selectedItems.some(i => i.path === item.path) && (
-                    <div className="mt-2 p-1 bg-blue-100 rounded-full">
-                      <FiCheck className="w-4 h-4 text-blue-600" />
-                    </div>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
 
         <div className="border-t border-gray-200 p-6 bg-gray-50">
           <div className="flex justify-between items-center">
-            <div className="text-sm text-gray-600">
-              {selectedItems.length} item(s) ready for wipe
+            <div className="flex items-center gap-4">
+              <button
+                onClick={handleSelectAll}
+                className="text-sm text-gray-600 hover:text-gray-900"
+              >
+                {selectedItems.length === files.filter(f => f.type === 'file').length 
+                  ? 'Deselect All Files' 
+                  : 'Select All Files'}
+              </button>
+              <div className="text-sm text-gray-600">
+                {selectedItems.length} file(s) ready for wipe
+              </div>
             </div>
             <div className="flex space-x-3">
               <button
@@ -427,6 +536,9 @@ export default function Home() {
   const [sessionDetails, setSessionDetails] = useState(null);
   const [allSessions, setAllSessions] = useState([]);
   const [showSessionsList, setShowSessionsList] = useState(false);
+  const [currentBrowserPath, setCurrentBrowserPath] = useState('');
+  const [browserFiles, setBrowserFiles] = useState([]);
+  const [loadingBrowser, setLoadingBrowser] = useState(false);
 
   const statusIntervalRef = useRef(null);
   const statusPollingRef = useRef(false);
@@ -445,6 +557,39 @@ export default function Home() {
       }
     };
   }, []);
+
+  const loadBrowserFiles = async (path = '') => {
+    try {
+      setLoadingBrowser(true);
+      const response = await axios.get(`${API_BASE_URL}/api/files`, {
+        params: { path }
+      });
+      setBrowserFiles(response.data.items || []);
+      setCurrentBrowserPath(response.data.relativePath || '');
+      setLoadingBrowser(false);
+    } catch (error) {
+      console.error('Error loading browser files:', error);
+      setBrowserFiles([]);
+      setLoadingBrowser(false);
+      toast.error('Could not load files from this directory');
+    }
+  };
+
+
+  // Navigate to path in browser
+  const navigateInBrowser = (path) => {
+    loadBrowserFiles(path);
+  };
+
+  // Navigate up in browser
+  const navigateUpInBrowser = () => {
+    if (currentBrowserPath) {
+      const parentPath = currentBrowserPath.split('/').slice(0, -1).join('/');
+      loadBrowserFiles(parentPath);
+    } else {
+      loadBrowserFiles();
+    }
+  };
 
   // Load available files
   const loadAvailableFiles = async () => {
@@ -472,6 +617,8 @@ export default function Home() {
 
   // Open file browser
   const openFileBrowser = () => {
+    setCurrentBrowserPath('');
+    loadBrowserFiles();
     setShowFileBrowser(true);
   };
 
@@ -480,18 +627,21 @@ export default function Home() {
     const newPaths = [...paths];
     
     selectedItems.forEach(item => {
-      if (!newPaths.some(p => p.path === item.path)) {
-        newPaths.push({
-          id: Date.now() + Math.random(),
-          path: item.path,
-          type: item.type,
-          name: item.name
-        });
+      // Only add files (not directories)
+      if (item.type === 'file') {
+        if (!newPaths.some(p => p.path === item.path)) {
+          newPaths.push({
+            id: Date.now() + Math.random(),
+            path: item.path,
+            type: 'file',
+            name: item.name
+          });
+        }
       }
     });
     
     setPaths(newPaths);
-    toast.success(`Added ${selectedItems.length} item(s) to wipe list`);
+    toast.success(`Added ${selectedItems.length} file(s) to wipe list`);
   };
 
   // Manual path input
@@ -680,68 +830,86 @@ const startStatusPolling = (sessionId) => {
 };
 
   // Check wipe status
-  const checkWipeStatus = async (sessionId) => {
-    if (!statusPollingRef.current || !sessionId) return;
+  // In your frontend, update the checkWipeStatus function:
+const checkWipeStatus = async (sessionId) => {
+  if (!statusPollingRef.current || !sessionId) return;
+  
+  try {
+    console.log(`Checking status for session: ${sessionId}`);
+    const response = await axios.get(`${API_BASE_URL}/api/wipe/status/${sessionId}`, {
+      timeout: 5000
+    });
+    const session = response.data;
     
-    try {
-      const response = await axios.get(`${API_BASE_URL}/api/wipe/status/${sessionId}`);
-      const session = response.data;
-      
-      setSessionDetails(session);
-      
-      if (session.progress !== undefined) {
-        setWipeProgress(session.progress);
-      }
-      
-      if (session.status === 'completed' || session.status === 'failed') {
-        statusPollingRef.current = false;
-        if (statusIntervalRef.current) {
-          clearInterval(statusIntervalRef.current);
-          statusIntervalRef.current = null;
-        }
-        
-        setWipeStatus(session.status);
-        setIsWiping(false);
-        setWipeProgress(100);
-        
-        if (session.firstCompletionNotification !== false) {
-          if (session.status === 'completed') {
-            toast.success('✅ Wipe process completed successfully! Certificate is ready for download.', {
-              position: "top-right",
-              autoClose: 8000,
-              closeOnClick: true,
-              pauseOnHover: true,
-              draggable: true,
-            });
-          } else {
-            toast.error(`❌ Wipe process failed: ${session.error || 'Unknown error'}`, {
-              position: "top-right",
-              autoClose: 8000,
-            });
-          }
-        }
-        
-        // Reload sessions list
-        loadAllSessions();
-        
-      } else if (session.status === 'in-progress') {
-        setWipeStatus('in-progress');
-        setWipeProgress(session.progress || 0);
-      }
-      
-    } catch (error) {
-      console.error('Error checking status:', error);
-      if (error.response?.status === 404) {
-        statusPollingRef.current = false;
-        if (statusIntervalRef.current) {
-          clearInterval(statusIntervalRef.current);
-          statusIntervalRef.current = null;
-        }
-        setIsWiping(false);
-        toast.error('Wipe session not found or expired');
-      }
+    console.log('Session status:', session.status, 'Progress:', session.progress);
+    
+    setSessionDetails(session);
+    
+    if (session.progress !== undefined) {
+      setWipeProgress(session.progress);
     }
-  };
+    
+    if (session.status === 'completed' || session.status === 'failed') {
+      // Stop polling
+      statusPollingRef.current = false;
+      if (statusIntervalRef.current) {
+        clearInterval(statusIntervalRef.current);
+        statusIntervalRef.current = null;
+      }
+      
+      // Update state
+      setWipeStatus(session.status);
+      setIsWiping(false);
+      setWipeProgress(100);
+      
+      // Show completion toast
+      if (session.status === 'completed') {
+        toast.success(`Wipe completed! ${session.filesWiped || 0} files deleted`, {
+          autoClose: 8000,
+        });
+      } else {
+        toast.error(`Wipe failed: ${session.error || 'Unknown error'}`, {
+          autoClose: 8000,
+        });
+      }
+      
+      // Reload sessions list
+      loadAllSessions();
+      
+    } else if (session.status === 'in-progress') {
+      setWipeStatus('in-progress');
+      setWipeProgress(session.progress || 0);
+    }
+    
+  } catch (error) {
+    console.error('Error checking status:', error);
+    
+    // Handle different error types
+    if (error.response?.status === 404) {
+      // Session not found
+      toast.error(`Session not found. It may have expired or been corrupted.`, {
+        autoClose: 5000,
+      });
+    } else if (error.code === 'ECONNABORTED') {
+      // Timeout - continue polling
+      console.log('Status check timeout, will retry...');
+      return;
+    } else {
+      // Network or other error
+      console.error('Network error checking status:', error.message);
+    }
+    
+    // Only stop polling on 404 errors
+    if (error.response?.status === 404) {
+      statusPollingRef.current = false;
+      if (statusIntervalRef.current) {
+        clearInterval(statusIntervalRef.current);
+        statusIntervalRef.current = null;
+      }
+      setIsWiping(false);
+    }
+  }
+};
 
   // Manual status check
   const manualStatusCheck = async () => {
@@ -1037,11 +1205,15 @@ const startStatusPolling = (sessionId) => {
       
       {/* Modals */}
       <FileBrowserModal
-        isOpen={showFileBrowser}
-        onClose={() => setShowFileBrowser(false)}
-        onSelect={handleFileSelection}
-        files={availableFiles}
-      />
+    isOpen={showFileBrowser}
+    onClose={() => setShowFileBrowser(false)}
+    onSelect={handleFileSelection}
+    currentPath={currentBrowserPath}
+    files={browserFiles}
+    onNavigate={navigateInBrowser}
+    onNavigateUp={navigateUpInBrowser}
+    baseDirectory={browserFiles.length > 0 ? browserFiles[0]?.baseDirectory : ''}
+  />
       
       <ConfirmationDialog
         isOpen={showConfirmation}
