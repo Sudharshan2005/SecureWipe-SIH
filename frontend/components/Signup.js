@@ -1,26 +1,25 @@
-import React, { useState } from 'react';
 import axios from 'axios';
-import { useRouter } from 'next/navigation'; // Correct import for App Router
-import { ToastContainer, toast } from 'react-toastify';
-import 'react-toastify/dist/ReactToastify.css';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
 import {
-  FiMail,
+  FiArrowLeft,
+  FiBriefcase,
   FiLock,
-  FiUserPlus,
   FiShield,
   FiUser,
-  FiBuilding,
-  FiUsers,
-  FiArrowLeft
+  FiUserPlus,
+  FiUsers
 } from 'react-icons/fi';
-import Link from 'next/link';
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
-const AUTH_API_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || 'http://localhost:5001';
+const AUTH_API_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || process.env.REACT_APP_AUTH_API_URL || 'http://localhost:5001';
 
 const Signup = () => {
-  const router = useRouter(); // Use hook correctly
+  const router = useRouter();
   const [formData, setFormData] = useState({
-    email: '',
+    username: '',
     password: '',
     confirmPassword: '',
     role: 'individual'
@@ -45,7 +44,7 @@ const Signup = () => {
     e.preventDefault();
     
     // Validation
-    if (!formData.email || !formData.password || !formData.confirmPassword || !formData.role) {
+    if (!formData.username || !formData.password || !formData.confirmPassword || !formData.role) {
       toast.error('Please fill in all fields');
       return;
     }
@@ -63,15 +62,18 @@ const Signup = () => {
     setLoading(true);
     
     try {
+      console.log('[Signup] Sending request', { url: `${AUTH_API_URL}/api/auth/signup`, username: formData.username, role: formData.role });
       const response = await axios.post(`${AUTH_API_URL}/api/auth/signup`, {
-        email: formData.email,
+        username: formData.username,
         password: formData.password,
         role: formData.role
       });
+      console.log('[Signup] Response received', response.data);
       
-      // Store token and user info in sessionStorage
+      // Store token, session ID, and user info in sessionStorage
       sessionStorage.setItem('authToken', response.data.token);
-      sessionStorage.setItem('userEmail', response.data.user.email);
+      sessionStorage.setItem('sessionId', response.data.sessionId);
+      sessionStorage.setItem('username', response.data.user.username);
       sessionStorage.setItem('userRole', response.data.user.role);
       sessionStorage.setItem('userId', response.data.user.id);
       
@@ -79,18 +81,19 @@ const Signup = () => {
         sessionStorage.setItem('organizationId', response.data.user.organizationId);
       }
       
-      // Store session ID
-      sessionStorage.setItem('sessionId', response.data.token.split('.')[2]);
+      toast.success('Account created successfully! Redirecting to login...');
       
-      toast.success('Account created successfully!');
-      
-      // Redirect to dashboard
+      // Redirect to login for first sign-in
       setTimeout(() => {
-        router.push('/dashboard');
-      }, 1000);
+        router.push('/login');
+      }, 800);
       
     } catch (error) {
-      console.error('Signup error:', error);
+      console.error('[Signup] Error', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
       const errorMessage = error.response?.data?.error || 'Signup failed. Please try again.';
       toast.error(errorMessage);
     } finally {
@@ -127,22 +130,22 @@ const Signup = () => {
           {/* Signup Form */}
           <div className="p-8">
             <form onSubmit={handleSignup}>
-              {/* Email */}
+              {/* Username */}
               <div className="mb-6">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Email Address
+                  Username
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <FiMail className="h-5 w-5 text-gray-400" />
+                    <FiUser className="h-5 w-5 text-gray-400" />
                   </div>
                   <input
-                    type="email"
-                    name="email"
-                    value={formData.email}
+                    type="text"
+                    name="username"
+                    value={formData.username}
                     onChange={handleChange}
                     className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-xl bg-gray-50 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition-colors"
-                    placeholder="you@example.com"
+                    placeholder="Enter your username"
                     required
                   />
                 </div>
@@ -218,22 +221,22 @@ const Signup = () => {
                     </div>
                   </div>
                   
-                  {/* Organization Manager */}
+                  {/* Organization CEO */}
                   <div 
-                    onClick={() => handleRoleSelect('organization-manager')}
+                    onClick={() => handleRoleSelect('organization-ceo')}
                     className={`p-4 border-2 rounded-xl cursor-pointer transition-all ${
-                      formData.role === 'organization-manager' 
+                      formData.role === 'organization-ceo' 
                         ? 'border-green-500 bg-green-50 ring-2 ring-green-200' 
                         : 'border-gray-200 hover:border-green-300 hover:bg-green-50'
                     }`}
                   >
                     <div className="flex flex-col items-center text-center">
                       <div className={`p-3 rounded-lg mb-2 ${
-                        formData.role === 'organization-manager' ? 'bg-green-100' : 'bg-gray-100'
+                        formData.role === 'organization-ceo' ? 'bg-green-100' : 'bg-gray-100'
                       }`}>
-                        <FiBuilding className="w-6 h-6 text-green-600" />
+                        <FiBriefcase className="w-6 h-6 text-green-600" />
                       </div>
-                      <div className="font-semibold text-gray-900">Manager</div>
+                      <div className="font-semibold text-gray-900">CEO</div>
                       <div className="text-xs text-gray-600 mt-1">Create organization</div>
                     </div>
                   </div>
@@ -267,14 +270,14 @@ const Signup = () => {
                     <span className="font-semibold">Individual Account:</span> Perfect for personal file deletion needs. Full access to all wiping features.
                   </div>
                 )}
-                {formData.role === 'organization-manager' && (
+                {formData.role === 'organization-ceo' && (
                   <div className="text-sm text-gray-700">
-                    <span className="font-semibold">Organization Manager:</span> Create and manage your organization. Add employees and monitor all wiping activities.
+                    <span className="font-semibold">Organization CEO:</span> Create and manage your organization. Add employees and monitor all wiping activities.
                   </div>
                 )}
                 {formData.role === 'organization-employee' && (
                   <div className="text-sm text-gray-700">
-                    <span className="font-semibold">Organization Employee:</span> Join an existing organization. Your manager will provide organization details.
+                    <span className="font-semibold">Organization Employee:</span> Join an existing organization. Your CEO will provide organization details.
                   </div>
                 )}
               </div>
