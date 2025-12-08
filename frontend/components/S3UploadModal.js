@@ -1,17 +1,16 @@
 'use client';
 
-import { useState, useEffect } from 'react';
 import axios from 'axios';
+import { useEffect, useState } from 'react';
 import {
-  FiUpload,
-  FiX,
-  FiCheck,
-  FiAlertCircle,
-  FiLock,
-  FiUnlock,
-  FiCloud,
-  FiFile,
-  FiFolder
+    FiAlertCircle,
+    FiCheck,
+    FiCloud,
+    FiFile,
+    FiLock,
+    FiUnlock,
+    FiUpload,
+    FiX
 } from 'react-icons/fi';
 
 const S3UploadModal = ({ 
@@ -39,11 +38,21 @@ const S3UploadModal = ({
       setUploadStatus('');
       setUploadResults([]);
       setErrors([]);
+    } else {
+      console.log('[S3UploadModal] Modal opened with selectedFiles:', selectedFiles);
     }
   }, [isOpen]);
+  
+  // Log when selectedFiles changes
+  useEffect(() => {
+    console.log('[S3UploadModal] selectedFiles prop changed:', selectedFiles);
+  }, [selectedFiles]);
 
   // Validate selectedFiles
   const validFiles = Array.isArray(selectedFiles) ? selectedFiles : [];
+  
+  console.log('[S3UploadModal] Received selectedFiles:', selectedFiles);
+  console.log('[S3UploadModal] validFiles count:', validFiles.length);
   
   // Ensure files have required properties
   const processedFiles = validFiles.map(file => {
@@ -54,19 +63,35 @@ const S3UploadModal = ({
         type: 'file'
       };
     }
-    return {
+    // Files from wipe page have path, name, type already
+    const processed = {
       path: file.path || '',
-      name: file.name || '',
+      name: file.name || file.path?.split('/').pop() || '',
       type: file.type || 'file'
     };
-  }).filter(file => file.path && file.name);
+    console.log('[S3UploadModal] Processed file:', processed);
+    return processed;
+  }).filter(file => {
+    const isValid = file.path && file.name;
+    if (!isValid) {
+      console.warn('[S3UploadModal] Filtered out invalid file:', file);
+    }
+    return isValid;
+  });
+  
+  console.log('[S3UploadModal] Final processedFiles:', processedFiles);
 
   // In the handleUpload function of S3UploadModal.js
 // In S3UploadModal.js - Update the handleUpload function
 
 const handleUpload = async () => {
+  console.log('[S3UploadModal] handleUpload called');
+  console.log('[S3UploadModal] processedFiles:', processedFiles);
+  console.log('[S3UploadModal] processedFiles.length:', processedFiles.length);
+  
   if (processedFiles.length === 0) {
-    setErrors([{ message: 'No valid files selected for upload' }]);
+    console.error('[S3UploadModal] No files to upload');
+    setErrors([{ message: 'No valid files selected for upload. Please select files from the file list.' }]);
     return;
   }
 

@@ -56,7 +56,8 @@ app.use(cors({
 }));
 
 // Add OPTIONS handler for preflight requests
-app.options('*', cors()); // Enable pre-flight for all routesapp.use(express.json({ limit: '50mb' }));
+app.options('*', cors()); // Enable pre-flight for all routes
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Store wipe sessions
@@ -1420,8 +1421,7 @@ app.post('/api/s3/upload', async (req, res) => {
       try {
         console.log('\n📄 Processing file:', fileInfo);
         
-        const filePath = fileInfo.path;
-        filePath = '/Users/sudharshan/Documents/sih/' + filePath;
+        let filePath = fileInfo.path;
         const fileName = fileInfo.name || path.basename(filePath || '');
         
         if (!filePath) {
