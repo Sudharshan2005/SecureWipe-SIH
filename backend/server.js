@@ -7,6 +7,7 @@ const PDFDocument = require('pdfkit');
 const winston = require('winston');
 const os = require('os');
 const s3Service = require('./s3-service');
+const multer = require('multer')
 
 require('dotenv').config();
 
@@ -39,9 +40,24 @@ const SESSIONS_DIR = path.join(__dirname, 'sessions');
 fs.ensureDirSync(SESSIONS_DIR);
 
 // Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(cors({
+  origin: [
+    'http://localhost:3000', 
+    'http://localhost:5000',
+    'http://localhost:5173',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5000'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'Access-Control-Allow-Origin'],
+  exposedHeaders: ['Content-Length', 'X-Request-Id'],
+  maxAge: 86400 // 24 hours
+}));
+
+// Add OPTIONS handler for preflight requests
+app.options('*', cors()); // Enable pre-flight for all routesapp.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Store wipe sessions
 const wipeSessions = new Map();
@@ -58,9 +74,17 @@ const WIPE_PATTERNS = [
   Buffer.from([0x24, 0x92, 0x49]),
 ];
 
-/**
- * Format bytes to human readable
- */
+const upload = multer({
+  dest: 'uploads/', // Temporary directory for file uploads
+  limits: {
+    fileSize: 1024 * 1024 * 100, // 100MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept all files
+    cb(null, true);
+  }
+});
+
 function formatBytes(bytes, decimals = 2) {
   if (bytes === 0) return '0 Bytes';
   
@@ -73,9 +97,6 @@ function formatBytes(bytes, decimals = 2) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
-/**
- * Save session to file for persistence
- */
 async function saveSessionToFile(sessionId, session) {
   try {
     const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
@@ -85,9 +106,7 @@ async function saveSessionToFile(sessionId, session) {
       fromFile: true
     };
     
-    // Create a clean copy without circular references or non-serializable data
     const cleanSession = JSON.parse(JSON.stringify(sessionToSave, (key, value) => {
-      // Remove any non-serializable values
       if (value instanceof Buffer) {
         return value.toString('base64');
       }
@@ -103,11 +122,9 @@ async function saveSessionToFile(sessionId, session) {
       return value;
     }));
     
-    // Write to a temporary file first, then rename (atomic operation)
     const tempFilePath = filePath + '.tmp';
     await fs.writeFile(tempFilePath, JSON.stringify(cleanSession, null, 2), 'utf8');
     
-    // Atomically replace the old file
     await fs.rename(tempFilePath, filePath);
     
     logger.info(`Session ${sessionId} saved to file`);
@@ -118,9 +135,6 @@ async function saveSessionToFile(sessionId, session) {
   }
 }
 
-/**
- * Load session from file
- */
 async function loadSessionFromFile(sessionId) {
   try {
     const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
@@ -128,18 +142,12 @@ async function loadSessionFromFile(sessionId) {
       return null;
     }
     
-    // Read and parse the file
     const fileContent = await fs.readFile(filePath, 'utf8');
     
-    // Clean the content - remove any trailing commas or invalid JSON
     let cleanContent = fileContent.trim();
-    
-    // Remove any trailing commas that might break JSON parsing
     cleanContent = cleanContent.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
     
-    // Parse the JSON
     const session = JSON.parse(cleanContent, (key, value) => {
-      // Restore Date objects
       if (key === 'startTime' || key === 'endTime' || key === 'lastAccessed' || key === 'savedAt') {
         return value ? new Date(value) : null;
       }
@@ -149,7 +157,6 @@ async function loadSessionFromFile(sessionId) {
     session.from = 'file storage';
     session.lastAccessed = new Date();
     
-    // Validate the session structure
     if (!session.id || !session.status) {
       logger.warn(`Invalid session data in file: ${sessionId}`);
       return null;
@@ -158,67 +165,10 @@ async function loadSessionFromFile(sessionId) {
     return session;
   } catch (error) {
     logger.error(`Failed to load session ${sessionId} from file:`, error.message);
-    
-    // Try to read and log the corrupted file for debugging
-    try {
-      const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
-      if (await fs.pathExists(filePath)) {
-        const badContent = await fs.readFile(filePath, 'utf8');
-        logger.error(`Corrupted file content (first 200 chars): ${badContent.substring(0, 200)}`);
-        
-        // Try to fix the corrupted file
-        await fixCorruptedSessionFile(sessionId, filePath, badContent);
-      }
-    } catch (readError) {
-      logger.error('Could not read corrupted file:', readError.message);
-    }
-    
     return null;
   }
 }
 
-async function fixCorruptedSessionFile(sessionId, filePath, content) {
-  try {
-    // Try to extract valid JSON from the corrupted file
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const jsonStr = jsonMatch[0];
-      const cleanedJson = jsonStr
-        .replace(/,\s*}/g, '}')
-        .replace(/,\s*]/g, ']')
-        .replace(/,\s*,/g, ',')
-        .replace(/\n\s*\n/g, '\n');
-      
-      const session = JSON.parse(cleanedJson);
-      session.id = sessionId;
-      session.status = session.status || 'unknown';
-      session.lastAccessed = new Date();
-      
-      // Save the fixed session
-      await saveSessionToFile(sessionId, session);
-      logger.info(`Fixed corrupted session file: ${sessionId}`);
-      return session;
-    }
-  } catch (fixError) {
-    logger.error(`Failed to fix corrupted session ${sessionId}:`, fixError.message);
-    
-    // Create a minimal valid session if all else fails
-    const minimalSession = {
-      id: sessionId,
-      status: 'unknown',
-      lastAccessed: new Date(),
-      from: 'recovered',
-      error: 'Session recovered from corruption'
-    };
-    
-    await fs.writeFile(filePath, JSON.stringify(minimalSession, null, 2), 'utf8');
-    return minimalSession;
-  }
-}
-
-/**
- * Validate and sanitize file path
- */
 function validateAndSanitizePath(userPath) {
   try {
     const cleanPath = userPath.trim();
@@ -255,9 +205,6 @@ function validateAndSanitizePath(userPath) {
   }
 }
 
-/**
- * Check if path exists and is accessible
- */
 async function validatePathExists(fullPath) {
   try {
     await fs.access(fullPath);
@@ -268,9 +215,6 @@ async function validatePathExists(fullPath) {
   }
 }
 
-/**
- * Securely wipe a file
- */
 async function secureWipeFile(filePath, passes = 7) {
   try {
     const stats = await fs.stat(filePath);
@@ -314,9 +258,6 @@ async function secureWipeFile(filePath, passes = 7) {
   }
 }
 
-/**
- * Recursively wipe directory - UPDATED VERSION
- */
 async function wipeDirectory(dirPath, sessionId) {
   let items;
   try {
@@ -351,12 +292,10 @@ async function wipeDirectory(dirPath, sessionId) {
         results.directories.push(...subResults.directories);
         results.errors.push(...subResults.errors);
         
-        // Remove empty directory
         try {
           await fs.rmdir(fullPath);
           results.directories.push(path.relative(BASE_DIRECTORY, fullPath));
           
-          // Update session for directory removal
           if (sessionId && wipeSessions.has(sessionId)) {
             const session = wipeSessions.get(sessionId);
             session.directoriesWiped = (session.directoriesWiped || 0) + 1;
@@ -376,13 +315,11 @@ async function wipeDirectory(dirPath, sessionId) {
           ...wipeResult
         });
         
-        // Update session for file wipe
         if (sessionId && wipeSessions.has(sessionId)) {
           const session = wipeSessions.get(sessionId);
           session.filesWiped = (session.filesWiped || 0) + 1;
           session.lastAccessed = new Date();
           
-          // Update total size
           session.totalSize = (session.totalSize || 0) + (wipeResult.size || 0);
           wipeSessions.set(sessionId, session);
         }
@@ -400,54 +337,20 @@ async function wipeDirectory(dirPath, sessionId) {
   return results;
 }
 
-/**
- * Create wipe session
- */
-function createWipeSession(paths, settings) {
-  const sessionId = uuidv4();
-  const session = {
-    id: sessionId,
-    paths: paths,
-    settings: settings,
-    startTime: new Date(),
-    status: 'pending',
-    filesWiped: 0,
-    directoriesWiped: 0,
-    totalSize: 0,
-    errors: [],
-    baseDirectory: BASE_DIRECTORY,
-    lastAccessed: new Date(),
-    from: 'memory'
-  };
-  
-  wipeSessions.set(sessionId, session);
-  
-  // Save to file for persistence
-  saveSessionToFile(sessionId, session);
-  
-  return sessionId;
-}
-
-/**
- * Update wipe session - IMPROVED VERSION
- */
 function updateWipeSession(sessionId, updates) {
   if (wipeSessions.has(sessionId)) {
     const session = wipeSessions.get(sessionId);
     
-    // Calculate progress if not provided
     if (!updates.progress && session.totalPaths && (updates.processedPaths !== undefined)) {
       updates.progress = Math.round((updates.processedPaths / session.totalPaths) * 100);
     }
     
-    // Make sure we have valid values
     const cleanUpdates = {};
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined && value !== null) {
         if (value instanceof Date) {
           cleanUpdates[key] = value.toISOString();
         } else if (typeof value === 'object' && !Array.isArray(value)) {
-          // Deep clone objects to prevent circular references
           cleanUpdates[key] = JSON.parse(JSON.stringify(value));
         } else {
           cleanUpdates[key] = value;
@@ -455,16 +358,13 @@ function updateWipeSession(sessionId, updates) {
       }
     }
     
-    // Merge updates
     Object.assign(session, cleanUpdates);
     session.lastAccessed = new Date();
     
-    // Save to file, but don't wait for it (non-blocking)
     const importantUpdates = ['status', 'filesWiped', 'directoriesWiped', 'totalSize', 'progress', 'errors', 'endTime'];
     const hasImportantUpdate = Object.keys(updates).some(key => importantUpdates.includes(key));
     
     if (hasImportantUpdate) {
-      // Save asynchronously to prevent blocking
       setTimeout(async () => {
         try {
           await saveSessionToFile(sessionId, session);
@@ -476,7 +376,6 @@ function updateWipeSession(sessionId, updates) {
     
     wipeSessions.set(sessionId, session);
     
-    // Log progress updates
     if (updates.progress !== undefined && updates.progress % 25 === 0) {
       logger.info(`Session ${sessionId}: Progress ${updates.progress}% - ${session.filesWiped || 0} files, ${session.directoriesWiped || 0} directories`);
     }
@@ -486,9 +385,6 @@ function updateWipeSession(sessionId, updates) {
   return null;
 }
 
-/**
- * Generate certificate PDF
- */
 function generateCertificate(session) {
   return new Promise((resolve, reject) => {
     try {
@@ -578,9 +474,6 @@ function generateCertificate(session) {
   });
 }
 
-/**
- * Generate detailed log content
- */
 function generateLogContent(session) {
   const now = new Date();
   const startTime = session.startTime ? new Date(session.startTime) : null;
@@ -682,11 +575,6 @@ Log generated by SecureWipe Pro v2.4`;
 }
 
 // API Routes
-
-/**
- * Get available files and folders
- */
-// In your server.js, update the /api/files endpoint:
 app.get('/api/files', async (req, res) => {
   try {
     const { path: subPath = '' } = req.query;
@@ -694,7 +582,6 @@ app.get('/api/files', async (req, res) => {
     let targetPath = BASE_DIRECTORY;
     let relativePath = '';
     
-    // Handle subdirectories
     if (subPath && subPath.trim() !== '') {
       try {
         const pathInfo = validateAndSanitizePath(subPath);
@@ -755,7 +642,6 @@ app.get('/api/files', async (req, res) => {
       })
     );
 
-    // Sort: directories first, then files, then alphabetically
     items.sort((a, b) => {
       if (a.type === 'directory' && b.type !== 'directory') return -1;
       if (a.type !== 'directory' && b.type === 'directory') return 1;
@@ -780,18 +666,17 @@ app.get('/api/files', async (req, res) => {
   }
 });
 
-/**
- * Start wipe process - UPDATED VERSION
- */
 app.post('/api/wipe/start', async (req, res) => {
   try {
-    const { paths, settings = {} } = req.body;
+    const { paths, settings = {}, sessionId: clientSessionId } = req.body;
     
     if (!paths || !Array.isArray(paths) || paths.length === 0) {
       return res.status(400).json({ error: 'No paths provided' });
     }
     
-    // Validate and convert relative paths to full paths
+    // Use client-provided sessionId or create new one
+    const sessionId = clientSessionId || uuidv4();
+    
     const validPaths = [];
     const invalidPaths = [];
     
@@ -822,12 +707,44 @@ app.post('/api/wipe/start', async (req, res) => {
       });
     }
     
-    const sessionId = createWipeSession(
-      validPaths.map(p => p.relativePath),
-      settings
-    );
+    // Create or update session
+    if (wipeSessions.has(sessionId)) {
+      // Update existing session
+      const session = wipeSessions.get(sessionId);
+      Object.assign(session, {
+        paths: validPaths.map(p => p.relativePath),
+        settings: settings,
+        status: 'pending',
+        startTime: new Date(),
+        lastAccessed: new Date(),
+        baseDirectory: BASE_DIRECTORY
+      });
+      wipeSessions.set(sessionId, session);
+    } else {
+      // Create new session
+      const session = {
+        id: sessionId,
+        paths: validPaths.map(p => p.relativePath),
+        settings: settings,
+        startTime: new Date(),
+        status: 'pending',
+        filesWiped: 0,
+        directoriesWiped: 0,
+        totalSize: 0,
+        errors: [],
+        baseDirectory: BASE_DIRECTORY,
+        lastAccessed: new Date(),
+        from: 'memory',
+        clientProvided: !!clientSessionId
+      };
+      
+      wipeSessions.set(sessionId, session);
+    }
     
-    // Start wipe process immediately (not in setTimeout)
+    // Save to file for persistence
+    saveSessionToFile(sessionId, wipeSessions.get(sessionId));
+    
+    // Start wipe process immediately
     (async () => {
       try {
         updateWipeSession(sessionId, { 
@@ -857,7 +774,6 @@ app.post('/api/wipe/start', async (req, res) => {
               totalResults.directories.push(...dirResults.directories);
               totalResults.errors.push(...dirResults.errors);
               
-              // Try to remove the directory itself
               try {
                 await fs.rmdir(fullPath);
                 totalResults.directories.push(relativePath);
@@ -887,7 +803,6 @@ app.post('/api/wipe/start', async (req, res) => {
             logger.error(`Error processing ${relativePath}:`, error);
           }
           
-          // Update progress
           processedCount++;
           const progress = Math.round((processedCount / validPaths.length) * 100);
           updateWipeSession(sessionId, {
@@ -899,7 +814,6 @@ app.post('/api/wipe/start', async (req, res) => {
           });
         }
         
-        // Calculate totals
         const totalSize = totalResults.files.reduce((sum, file) => sum + (file.size || 0), 0);
         
         updateWipeSession(sessionId, {
@@ -925,7 +839,7 @@ app.post('/api/wipe/start', async (req, res) => {
           progress: 100
         });
       }
-    })(); // Immediately invoke the async function
+    })();
     
     res.json({ 
       success: true,
@@ -947,28 +861,19 @@ app.post('/api/wipe/start', async (req, res) => {
   }
 });
 
-/**
- * Get wipe status
- */
-/**
- * Get wipe status - UPDATED to handle corrupted sessions
- */
 app.get('/api/wipe/status/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
   
-  // Check memory first
   if (wipeSessions.has(sessionId)) {
     const session = wipeSessions.get(sessionId);
     session.lastAccessed = new Date();
     
-    // Calculate progress if in progress
     if (session.status === 'in-progress') {
       const totalPaths = session.paths ? session.paths.length : 0;
       const processedPaths = (session.filesWiped || 0) + (session.directoriesWiped || 0);
       session.progress = totalPaths > 0 ? Math.round((processedPaths / totalPaths) * 100) : 0;
     }
     
-    // Handle completion notifications
     if (session.status === 'completed' || session.status === 'failed') {
       if (!completedNotifications.has(sessionId)) {
         session.firstCompletionNotification = true;
@@ -982,7 +887,6 @@ app.get('/api/wipe/status/:sessionId', async (req, res) => {
     return;
   }
   
-  // Try to load from file with better error handling
   try {
     const session = await loadSessionFromFile(sessionId);
     if (session) {
@@ -1004,9 +908,6 @@ app.get('/api/wipe/status/:sessionId', async (req, res) => {
   }
 });
 
-/**
- * Download certificate
- */
 app.get('/api/wipe/certificate/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -1042,9 +943,6 @@ app.get('/api/wipe/certificate/:sessionId', async (req, res) => {
   }
 });
 
-/**
- * Download wipe session logs
- */
 app.get('/api/wipe/logs/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -1052,14 +950,11 @@ app.get('/api/wipe/logs/:sessionId', async (req, res) => {
     let session = null;
     let source = 'memory';
     
-    // 1. Check active sessions
     if (wipeSessions.has(sessionId)) {
       session = wipeSessions.get(sessionId);
       source = 'active memory';
       session.lastAccessed = new Date();
-    }
-    // 2. Check file storage
-    else {
+    } else {
       session = await loadSessionFromFile(sessionId);
       if (session) {
         source = 'file storage';
@@ -1075,20 +970,16 @@ app.get('/api/wipe/logs/:sessionId', async (req, res) => {
       });
     }
     
-    // Add source information to session
     session.from = source;
     session.lastAccessed = new Date();
     
-    // Generate log content
     const logContent = generateLogContent(session);
     
-    // Save updated session
     if (source === 'memory') {
       wipeSessions.set(sessionId, session);
     }
     saveSessionToFile(sessionId, session);
     
-    // Send as text file
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Content-Disposition', `attachment; filename="wipe-logs-${sessionId}.txt"`);
     res.send(logContent);
@@ -1105,9 +996,6 @@ app.get('/api/wipe/logs/:sessionId', async (req, res) => {
   }
 });
 
-/**
- * Get all available sessions
- */
 app.get('/api/wipe/sessions', (req, res) => {
   const sessions = Array.from(wipeSessions.entries()).map(([id, session]) => ({
     id: id,
@@ -1130,9 +1018,6 @@ app.get('/api/wipe/sessions', (req, res) => {
   });
 });
 
-/**
- * Generate wipe script
- */
 app.post('/api/script/generate', async (req, res) => {
   try {
     const { paths, platform = 'windows', settings = {} } = req.body;
@@ -1477,172 +1362,55 @@ log "Log saved to: \$LOG_FILE"
   }
 });
 
-/**
- * Health check
- */
-app.get('/api/health', (req, res) => {
-  const baseDirExists = fs.existsSync(BASE_DIRECTORY);
-  
-  res.json({ 
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    sessions: wipeSessions.size,
-    baseDirectory: BASE_DIRECTORY,
-    directoryExists: baseDirExists,
-    memoryUsage: process.memoryUsage(),
-    uptime: process.uptime()
-  });
-});
+// In server.js - Update the S3 upload endpoint
 
-/**
- * Get server info
- */
-app.get('/api/info', (req, res) => {
-  res.json({
-    baseDirectory: BASE_DIRECTORY,
-    allowedPaths: ALLOWED_PATHS,
-    platform: os.platform(),
-    architecture: os.arch(),
-    serverTime: new Date().toISOString(),
-    nodeVersion: process.version,
-    sessionsDirectory: SESSIONS_DIR,
-    totalSessions: wipeSessions.size
-  });
-});
-
-/**
- * Clean up old sessions
- */
-app.get('/api/cleanup', async (req, res) => {
-  const now = Date.now();
-  const sevenDays = 7 * 24 * 60 * 60 * 1000;
-  let cleanedCount = 0;
-  let fileCleanedCount = 0;
-  
-  // Clean memory sessions
-  for (const [sessionId, session] of wipeSessions.entries()) {
-    if (session.endTime && (now - session.endTime.getTime() > sevenDays)) {
-      wipeSessions.delete(sessionId);
-      completedNotifications.delete(sessionId);
-      cleanedCount++;
-    }
-  }
-  
-  // Clean file sessions
-  try {
-    const files = await fs.readdir(SESSIONS_DIR);
-    for (const file of files) {
-      if (file.endsWith('.json')) {
-        const filePath = path.join(SESSIONS_DIR, file);
-        const stats = await fs.stat(filePath);
-        if (now - stats.mtimeMs > sevenDays) {
-          await fs.unlink(filePath);
-          fileCleanedCount++;
-        }
-      }
-    }
-  } catch (error) {
-    logger.error('Error cleaning session files:', error);
-  }
-  
-  res.json({
-    message: `Cleaned up ${cleanedCount} memory sessions and ${fileCleanedCount} file sessions`,
-    remainingSessions: wipeSessions.size
-  });
-});
-
-/**
- * Clean up corrupted session files
- */
-async function cleanupCorruptedSessions() {
-  try {
-    const files = await fs.readdir(SESSIONS_DIR);
-    let fixedCount = 0;
-    let deletedCount = 0;
-    
-    for (const file of files) {
-      if (file.endsWith('.json')) {
-        const sessionId = file.replace('.json', '');
-        const filePath = path.join(SESSIONS_DIR, file);
-        
-        try {
-          // Try to load the session
-          const session = await loadSessionFromFile(sessionId);
-          if (!session) {
-            // Session is corrupted, try to fix it
-            logger.warn(`Found corrupted session file: ${file}`);
-            const content = await fs.readFile(filePath, 'utf8');
-            const fixedSession = await fixCorruptedSessionFile(sessionId, filePath, content);
-            
-            if (fixedSession) {
-              fixedCount++;
-              logger.info(`Fixed corrupted session: ${sessionId}`);
-            } else {
-              // Delete if cannot be fixed and is old
-              const stats = await fs.stat(filePath);
-              const age = Date.now() - stats.mtimeMs;
-              const oneDay = 24 * 60 * 60 * 1000;
-              
-              if (age > oneDay) {
-                await fs.unlink(filePath);
-                deletedCount++;
-                logger.info(`Deleted corrupted session file: ${file} (age: ${Math.round(age / oneDay)} days)`);
-              }
-            }
-          }
-        } catch (error) {
-          logger.error(`Error processing session file ${file}:`, error.message);
-        }
-      }
-    }
-    
-    if (fixedCount > 0 || deletedCount > 0) {
-      logger.info(`Session cleanup: Fixed ${fixedCount}, Deleted ${deletedCount} corrupted sessions`);
-    }
-    
-    return { fixedCount, deletedCount };
-  } catch (error) {
-    logger.error('Error in session cleanup:', error);
-    return { fixedCount: 0, deletedCount: 0, error: error.message };
-  }
-}
-
-// Add a cleanup endpoint
-app.get('/api/cleanup-sessions', async (req, res) => {
-  try {
-    const result = await cleanupCorruptedSessions();
-    res.json({
-      success: true,
-      message: 'Session cleanup completed',
-      ...result
-    });
-  } catch (error) {
-    res.status(500).json({
-      error: 'Cleanup failed',
-      message: error.message
-    });
-  }
-});
-
-/**
- * Upload important files to S3 before wipe
- */
+// Update the S3 upload endpoint in server.js
 app.post('/api/s3/upload', async (req, res) => {
   try {
+    console.log('📤 S3 Upload request received');
+    console.log('Content-Type:', req.headers['content-type']);
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    
     const { files, password, sessionId } = req.body;
     
+    // Log detailed info
+    console.log('Files received:', files);
+    console.log('Type of files:', typeof files);
+    console.log('Is array?', Array.isArray(files));
+    
     if (!files || !Array.isArray(files) || files.length === 0) {
-      return res.status(400).json({ error: 'No files specified' });
+      console.error('No valid files array received');
+      return res.status(400).json({ 
+        success: false,
+        error: 'No files specified or invalid file format',
+        receivedData: req.body,
+        filesType: typeof files,
+        filesIsArray: Array.isArray(files),
+        filesLength: files ? (Array.isArray(files) ? files.length : 'Not an array') : 'No files'
+      });
     }
     
     if (!sessionId) {
-      return res.status(400).json({ error: 'Session ID required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Session ID is required' 
+      });
     }
     
-    // Get session to verify
+    // Get or create session
     let session = wipeSessions.get(sessionId);
     if (!session) {
-      return res.status(404).json({ error: 'Session not found' });
+      // Create a new session for the backup
+      session = {
+        id: sessionId,
+        startTime: new Date(),
+        status: 'backup-requested',
+        lastAccessed: new Date(),
+        baseDirectory: BASE_DIRECTORY,
+        from: 'backup-request'
+      };
+      wipeSessions.set(sessionId, session);
+      saveSessionToFile(sessionId, session);
     }
     
     const uploadResults = [];
@@ -1650,39 +1418,79 @@ app.post('/api/s3/upload', async (req, res) => {
     
     for (const fileInfo of files) {
       try {
-        const { path: filePath, name: fileName } = fileInfo;
+        console.log('\n📄 Processing file:', fileInfo);
         
-        if (!filePath || !fileName) {
-          errors.push({ file: fileInfo, error: 'Missing path or name' });
+        const filePath = fileInfo.path;
+        filePath = '/Users/sudharshan/Documents/sih/' + filePath;
+        const fileName = fileInfo.name || path.basename(filePath || '');
+        
+        if (!filePath) {
+          errors.push({ file: fileInfo, error: 'Missing file path' });
+          console.error('❌ Missing file path:', fileInfo);
           continue;
         }
         
-        // Validate file exists
-        const fullPath = path.join(BASE_DIRECTORY, filePath);
-        if (!(await fs.pathExists(fullPath))) {
-          errors.push({ file: fileInfo, error: 'File not found' });
-          continue;
-        }
-        
-        // Upload to S3
-        const result = await s3Service.uploadToS3(fullPath, fileName, password);
-        
-        if (result.success) {
-          uploadResults.push({
-            originalPath: filePath,
-            originalName: fileName,
-            s3Url: result.fileUrl,
-            s3Key: result.fileKey,
-            encrypted: result.encrypted,
-            size: result.size,
-            uploadedAt: result.uploadedAt,
-            isRealS3: result.isRealS3
+        // Validate and sanitize the path
+        try {
+          const pathInfo = validateAndSanitizePath(filePath);
+          const fullPath = pathInfo.fullPath;
+          
+          console.log('✅ Validated path:', filePath);
+          console.log('   Full path:', fullPath);
+          console.log('   File name:', fileName);
+          
+          // Check if file exists
+          if (!(await fs.pathExists(fullPath))) {
+            errors.push({ 
+              file: fileInfo, 
+              error: `File not found: ${filePath}`,
+              fullPath: fullPath 
+            });
+            console.error('❌ File not found:', fullPath);
+            continue;
+          }
+          
+          // Upload to S3
+          console.log(`   Uploading to S3...`);
+          const result = await s3Service.uploadToS3(fullPath, fileName, password);
+          
+          if (result.success) {
+            console.log(`   ✅ Upload successful`);
+            uploadResults.push({
+              originalPath: filePath,
+              originalName: fileName,
+              s3Url: result.fileUrl,
+              s3Key: result.fileKey,
+              encrypted: result.encrypted,
+              size: result.size,
+              uploadedAt: result.uploadedAt,
+              isRealS3: result.isRealS3
+            });
+            console.log(`✅ Uploaded: ${fileName}`);
+          } else {
+            console.error(`❌ Upload failed:`, result.error);
+            errors.push({ 
+              file: fileInfo, 
+              error: result.error 
+            });
+          }
+          
+        } catch (pathError) {
+          console.error('❌ Path validation error:', pathError.message);
+          errors.push({ 
+            file: fileInfo, 
+            error: `Invalid path: ${pathError.message}`,
+            path: filePath
           });
-        } else {
-          errors.push({ file: fileInfo, error: result.error });
         }
+        
       } catch (error) {
-        errors.push({ file: fileInfo, error: error.message });
+        console.error(`❌ Error processing file:`, error);
+        errors.push({ 
+          file: fileInfo, 
+          error: error.message,
+          stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
       }
     }
     
@@ -1695,6 +1503,10 @@ app.post('/api/s3/upload', async (req, res) => {
       updateWipeSession(sessionId, { s3Uploads: session.s3Uploads });
     }
     
+    console.log(`\n📈 Upload Summary:`);
+    console.log(`   ✅ Successful: ${uploadResults.length}`);
+    console.log(`   ❌ Failed: ${errors.length}`);
+    
     res.json({
       success: true,
       uploaded: uploadResults.length,
@@ -1706,17 +1518,18 @@ app.post('/api/s3/upload', async (req, res) => {
     });
     
   } catch (error) {
-    logger.error('S3 upload error:', error);
+    console.error('❌ S3 upload route error:', error);
+    console.error('❌ Error stack:', error.stack);
+    
     res.status(500).json({ 
+      success: false,
       error: 'Failed to upload files',
-      details: error.message 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
 
-/**
- * Get S3 uploads for a session
- */
 app.get('/api/s3/uploads/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -1732,21 +1545,10 @@ app.get('/api/s3/uploads/:sessionId', async (req, res) => {
     
     const uploads = session.s3Uploads || [];
     
-    // Get fresh info for each upload
-    const uploadsWithInfo = await Promise.all(
-      uploads.map(async (upload) => {
-        const info = await s3Service.getS3FileInfo(upload.s3Key);
-        return {
-          ...upload,
-          s3Info: info
-        };
-      })
-    );
-    
     res.json({
       sessionId,
       totalUploads: uploads.length,
-      uploads: uploadsWithInfo
+      uploads: uploads
     });
     
   } catch (error) {
@@ -1755,9 +1557,6 @@ app.get('/api/s3/uploads/:sessionId', async (req, res) => {
   }
 });
 
-/**
- * Get download URL for S3 file
- */
 app.get('/api/s3/download/:sessionId/:fileIndex', async (req, res) => {
   try {
     const { sessionId, fileIndex } = req.params;
@@ -1779,9 +1578,8 @@ app.get('/api/s3/download/:sessionId/:fileIndex', async (req, res) => {
     
     const upload = uploads[index];
     
-    // Generate presigned URL if using real S3
     if (upload.isRealS3) {
-      const downloadUrl = await s3Service.generatePresignedUrl(upload.s3Key, 3600); // 1 hour expiry
+      const downloadUrl = await s3Service.generatePresignedUrl(upload.s3Key, 3600);
       if (downloadUrl) {
         return res.json({
           downloadUrl,
@@ -1791,7 +1589,6 @@ app.get('/api/s3/download/:sessionId/:fileIndex', async (req, res) => {
       }
     }
     
-    // For simulated S3, return the local path info
     res.json({
       fileUrl: upload.s3Url,
       fileName: upload.originalName,
@@ -1801,6 +1598,204 @@ app.get('/api/s3/download/:sessionId/:fileIndex', async (req, res) => {
   } catch (error) {
     logger.error('Error generating download URL:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/health', (req, res) => {
+  const baseDirExists = fs.existsSync(BASE_DIRECTORY);
+  
+  res.json({ 
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    sessions: wipeSessions.size,
+    baseDirectory: BASE_DIRECTORY,
+    directoryExists: baseDirExists,
+    memoryUsage: process.memoryUsage(),
+    uptime: process.uptime()
+  });
+});
+
+app.get('/api/info', (req, res) => {
+  res.json({
+    baseDirectory: BASE_DIRECTORY,
+    allowedPaths: ALLOWED_PATHS,
+    platform: os.platform(),
+    architecture: os.arch(),
+    serverTime: new Date().toISOString(),
+    nodeVersion: process.version,
+    sessionsDirectory: SESSIONS_DIR,
+    totalSessions: wipeSessions.size
+  });
+});
+
+// Add this endpoint to server.js
+app.get('/api/s3/test', async (req, res) => {
+  try {
+    const connection = await s3Service.checkS3Connection();
+    
+    if (connection.connected) {
+      // Try to list files to verify permissions
+      const files = await s3Service.listS3Files();
+      
+      res.json({
+        success: true,
+        message: 'S3 connection successful',
+        details: connection,
+        bucket: connection.bucket,
+        region: connection.region,
+        filesCount: files.total || 0,
+        isRealS3: files.isRealS3,
+        note: files.isRealS3 ? 'Connected to real AWS S3' : 'Using simulation mode'
+      });
+    } else {
+      res.json({
+        success: false,
+        message: 'S3 connection failed',
+        details: connection,
+        note: 'Check your AWS credentials and bucket name'
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      code: error.code
+    });
+  }
+});
+
+app.get('/api/s3/test-connection', async (req, res) => {
+  try {
+    const connection = await s3Service.checkS3Connection();
+    
+    // Test upload with a small test file
+    const testFilePath = path.join(__dirname, 'test-upload.txt');
+    await fs.writeFile(testFilePath, 'Test upload for S3 connection verification');
+    
+    const uploadResult = await s3Service.uploadToS3(testFilePath, 'test-upload.txt');
+    
+    // Clean up test file
+    await fs.remove(testFilePath);
+    
+    res.json({
+      connection: connection,
+      uploadTest: uploadResult,
+      config: s3Service.getConfig(),
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Add a debug endpoint to check file paths
+app.get('/api/debug/path/:filePath', async (req, res) => {
+  try {
+    const { filePath } = req.params;
+    console.log('Debugging path:', filePath);
+    
+    // Validate and sanitize
+    const pathInfo = validateAndSanitizePath(filePath);
+    const fullPath = pathInfo.fullPath;
+    
+    console.log('Full path:', fullPath);
+    console.log('Relative path:', pathInfo.relativePath);
+    console.log('Base directory:', BASE_DIRECTORY);
+    
+    const exists = await fs.pathExists(fullPath);
+    const isDirectory = exists ? (await fs.stat(fullPath)).isDirectory() : false;
+    
+    res.json({
+      success: true,
+      filePath,
+      fullPath,
+      relativePath: pathInfo.relativePath,
+      exists,
+      isDirectory,
+      baseDirectory: BASE_DIRECTORY,
+      normalizedPath: path.normalize(filePath)
+    });
+    
+  } catch (error) {
+    res.json({
+      success: false,
+      error: error.message,
+      filePath: req.params.filePath
+    });
+  }
+});
+
+// Also add a test endpoint to verify the file exists
+app.get('/api/test/file/:filePath', async (req, res) => {
+  try {
+    const { filePath } = req.params;
+    console.log('Testing file path:', filePath);
+    
+    // Try direct path first
+    const directPath = path.join(BASE_DIRECTORY, filePath);
+    console.log('Direct path:', directPath);
+    console.log('Exists?', await fs.pathExists(directPath));
+    
+    // Try with validateAndSanitizePath
+    try {
+      const pathInfo = validateAndSanitizePath(filePath);
+      console.log('Validated path info:', pathInfo);
+      console.log('Validated path exists?', await fs.pathExists(pathInfo.fullPath));
+    } catch (validateError) {
+      console.log('Validation error:', validateError.message);
+    }
+    
+    res.json({
+      filePath,
+      directPath,
+      directExists: await fs.pathExists(directPath),
+      baseDirectory: BASE_DIRECTORY
+    });
+    
+  } catch (error) {
+    res.json({
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+app.get('/api/test/file/:filePath', async (req, res) => {
+  try {
+    const { filePath } = req.params;
+    console.log('Testing file path:', filePath);
+    
+    // Try direct path first
+    const directPath = path.join(BASE_DIRECTORY, filePath);
+    console.log('Direct path:', directPath);
+    console.log('Exists?', await fs.pathExists(directPath));
+    
+    // Try with validateAndSanitizePath
+    try {
+      const pathInfo = validateAndSanitizePath(filePath);
+      console.log('Validated path info:', pathInfo);
+      console.log('Validated path exists?', await fs.pathExists(pathInfo.fullPath));
+    } catch (validateError) {
+      console.log('Validation error:', validateError.message);
+    }
+    
+    res.json({
+      filePath,
+      directPath,
+      directExists: await fs.pathExists(directPath),
+      baseDirectory: BASE_DIRECTORY
+    });
+    
+  } catch (error) {
+    res.json({
+      error: error.message,
+      stack: error.stack
+    });
   }
 });
 
@@ -1830,7 +1825,6 @@ app.listen(PORT, () => {
   console.log(`📁 Base directory: ${BASE_DIRECTORY}`);
   console.log(`📁 Sessions directory: ${SESSIONS_DIR}`);
   
-  // Check if base directory exists
   if (!fs.existsSync(BASE_DIRECTORY)) {
     console.warn(`⚠️ WARNING: Base directory does not exist: ${BASE_DIRECTORY}`);
     console.warn('Please create the directory or update BASE_DIRECTORY in server.js');
@@ -1846,7 +1840,6 @@ app.listen(PORT, () => {
   
   logger.info(`Server started on port ${PORT}`);
   
-  // Periodic cleanup of old sessions (every 6 hours)
   setInterval(async () => {
     const now = Date.now();
     const sevenDays = 7 * 24 * 60 * 60 * 1000;

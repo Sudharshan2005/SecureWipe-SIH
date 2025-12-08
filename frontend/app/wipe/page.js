@@ -30,7 +30,7 @@ import {
   FiList,
   FiCloud
 } from 'react-icons/fi';
-import S3UploadModal from '../../components/S3UploadModal';
+import S3UploadModal from '../../components/S3UploadModal.js';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 
@@ -583,6 +583,7 @@ export default function Home() {
 const [filesForBackup, setFilesForBackup] = useState([]);
 
 
+
 const handleBackupRequest = (items) => {
   setFilesForBackup(items);
   setShowS3UploadModal(true);
@@ -679,25 +680,25 @@ const handleUploadComplete = (result) => {
 
   // Handle file selection
   const handleFileSelection = (selectedItems) => {
-    const newPaths = [...paths];
-    
-    selectedItems.forEach(item => {
-      // Only add files (not directories)
-      if (item.type === 'file') {
-        if (!newPaths.some(p => p.path === item.path)) {
-          newPaths.push({
-            id: Date.now() + Math.random(),
-            path: item.path,
-            type: 'file',
-            name: item.name
-          });
-        }
+  const newPaths = [...paths];
+  
+  selectedItems.forEach(item => {
+    if (item.type === 'file') {
+      // Use the item.path which is already the relative path from BASE_DIRECTORY
+      if (!newPaths.some(p => p.path === item.path)) {
+        newPaths.push({
+          id: Date.now() + Math.random(),
+          path: item.path, // This is already the correct relative path
+          type: 'file',
+          name: item.name
+        });
       }
-    });
-    
-    setPaths(newPaths);
-    toast.success(`Added ${selectedItems.length} file(s) to wipe list`);
-  };
+    }
+  });
+  
+  setPaths(newPaths);
+  toast.success(`Added ${selectedItems.length} file(s) to wipe list`);
+};
 
   // Manual path input
   const addManualPath = () => {
@@ -726,22 +727,23 @@ const handleUploadComplete = (result) => {
   };
 
   // Clear all paths
-  const clearAllPaths = () => {
-    if (paths.length > 0 && confirm('Clear all selected items?')) {
-      setPaths([]);
-      setCurrentSession(null);
-      setWipeStatus(null);
-      setWipeProgress(0);
-      setSessionDetails(null);
-      if (statusIntervalRef.current) {
-        clearInterval(statusIntervalRef.current);
-        statusIntervalRef.current = null;
-      }
-      setIsWiping(false);
-      statusPollingRef.current = false;
-      toast.info('Cleared all selections');
+  // Clear all paths - UPDATED
+const clearAllPaths = () => {
+  if (paths.length > 0 && confirm('Clear all selected items?')) {
+    setPaths([]);
+    setCurrentSession(null); // Ensure session is reset
+    setWipeStatus(null);
+    setWipeProgress(0);
+    setSessionDetails(null);
+    if (statusIntervalRef.current) {
+      clearInterval(statusIntervalRef.current);
+      statusIntervalRef.current = null;
     }
-  };
+    setIsWiping(false);
+    statusPollingRef.current = false;
+    toast.info('Cleared all selections');
+  }
+};
 
   // Download wipe script
   const downloadScript = async () => {
@@ -796,68 +798,74 @@ const handleUploadComplete = (result) => {
 
   // Start wipe process
   const startWipe = () => {
-    if (paths.length === 0) {
-      toast.error('Please select at least one file or folder');
-      return;
-    }
+  if (paths.length === 0) {
+    toast.error('Please select at least one file or folder');
+    return;
+  }
 
-    setShowConfirmation(true);
-  };
+  // Generate a sessionId upfront to use consistently
+  const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  setCurrentSession(newSessionId);
+  
+  setShowConfirmation(true);
+};
 
   // Confirmed wipe process
   const confirmWipe = async () => {
-    setShowConfirmation(false);
-    setIsWiping(true);
-    setWipeStatus('starting');
-    setWipeProgress(0);
+  setShowConfirmation(false);
+  setIsWiping(true);
+  setWipeStatus('starting');
+  setWipeProgress(0);
+  
+  try {
+    const validPaths = paths.map(p => p.path);
     
-    try {
-      const validPaths = paths.map(p => p.path);
-      
-      const toastId = toast.loading('Starting secure wipe process...', {
-        position: "top-right",
-        autoClose: false,
-      });
+    const toastId = toast.loading('Starting secure wipe process...', {
+      position: "top-right",
+      autoClose: false,
+    });
 
-      const response = await axios.post(`${API_BASE_URL}/api/wipe/start`, {
-        paths: validPaths,
-        settings: wipeSettings
-      });
+    const response = await axios.post(`${API_BASE_URL}/api/wipe/start`, {
+      paths: validPaths,
+      settings: wipeSettings,
+      sessionId: currentSession // Send the pre-generated sessionId
+    });
 
-      toast.update(toastId, {
-        render: 'Wipe process initiated! Tracking progress...',
-        type: toast.TYPE.INFO,
-        isLoading: false,
-        autoClose: 3000
-      });
+    toast.update(toastId, {
+      render: 'Wipe process initiated! Tracking progress...',
+      type: toast.TYPE.INFO,
+      isLoading: false,
+      autoClose: 3000
+    });
 
-      const sessionId = response.data.sessionId;
-      setCurrentSession(sessionId);
-      setWipeStatus('in-progress');
+    // Use the sessionId from response or keep the pre-generated one
+    const sessionId = response.data.sessionId || currentSession;
+    setCurrentSession(sessionId);
+    setWipeStatus('in-progress');
 
-      // Start polling for status
-      startStatusPolling(sessionId);
+    // Start polling for status
+    startStatusPolling(sessionId);
 
-      // Reload sessions list
-      loadAllSessions();
+    // Reload sessions list
+    loadAllSessions();
 
-    } catch (error) {
-      console.error('Error starting wipe:', error);
-      const errorMsg = error.response?.data?.error || 'Failed to start wipe process';
-      const invalidPaths = error.response?.data?.invalidPaths;
-      
-      if (invalidPaths) {
-        toast.error(`Invalid paths: ${invalidPaths.join(', ')}`);
-      } else {
-        toast.error(errorMsg);
-      }
-      
-      setIsWiping(false);
-      setWipeStatus(null);
-      setWipeProgress(0);
+  } catch (error) {
+    console.error('Error starting wipe:', error);
+    const errorMsg = error.response?.data?.error || 'Failed to start wipe process';
+    const invalidPaths = error.response?.data?.invalidPaths;
+    
+    if (invalidPaths) {
+      toast.error(`Invalid paths: ${invalidPaths.join(', ')}`);
+    } else {
+      toast.error(errorMsg);
     }
-  };
-
+    
+    setIsWiping(false);
+    setWipeStatus(null);
+    setWipeProgress(0);
+    setCurrentSession(null); // Reset session on error
+  }
+};
   // Start status polling - UPDATED VERSION
 const startStatusPolling = (sessionId) => {
   // Clear any existing interval
@@ -886,6 +894,7 @@ const startStatusPolling = (sessionId) => {
 
   // Check wipe status
   // In your frontend, update the checkWipeStatus function:
+// Check wipe status - ensure it uses the sessionId parameter
 const checkWipeStatus = async (sessionId) => {
   if (!statusPollingRef.current || !sessionId) return;
   
@@ -962,186 +971,201 @@ const checkWipeStatus = async (sessionId) => {
         statusIntervalRef.current = null;
       }
       setIsWiping(false);
+      setCurrentSession(null); // Reset session on 404
     }
   }
 };
 
   // Manual status check
-  const manualStatusCheck = async () => {
-    if (!currentSession) {
-      toast.error('No active wipe session');
-      return;
-    }
+  // Manual status check - UPDATED
+const manualStatusCheck = async () => {
+  const sessionIdToUse = currentSession;
+  
+  if (!sessionIdToUse) {
+    toast.error('No active wipe session');
+    return;
+  }
+  
+  try {
+    const toastId = toast.loading('Checking wipe status...', {
+      position: "top-right",
+      autoClose: false,
+    });
     
-    try {
-      const toastId = toast.loading('Checking wipe status...', {
-        position: "top-right",
-        autoClose: false,
-      });
-      
-      await checkWipeStatus(currentSession);
-      
-      toast.update(toastId, {
-        render: 'Status checked',
-        type: toast.TYPE.INFO,
-        isLoading: false,
-        autoClose: 2000,
-      });
-    } catch (error) {
-      toast.error('Failed to check status');
-    }
-  };
+    await checkWipeStatus(sessionIdToUse);
+    
+    toast.update(toastId, {
+      render: 'Status checked',
+      type: toast.TYPE.INFO,
+      isLoading: false,
+      autoClose: 2000,
+    });
+  } catch (error) {
+    toast.error('Failed to check status');
+  }
+};
 
   // Download certificate
-  const downloadCertificate = async () => {
-    if (!currentSession) {
-      toast.error('No wipe session found');
-      return;
-    }
+  // Download certificate - UPDATED
+const downloadCertificate = async () => {
+  const sessionIdToUse = currentSession;
+  
+  if (!sessionIdToUse) {
+    toast.error('No wipe session found');
+    return;
+  }
 
-    if (wipeStatus !== 'completed' && sessionDetails?.status !== 'completed') {
+  if (wipeStatus !== 'completed' && sessionDetails?.status !== 'completed') {
+    toast.error('Wipe process is not completed yet');
+    return;
+  }
+
+  try {
+    const toastId = toast.loading('Generating certificate...', {
+      position: "top-right",
+      autoClose: false,
+    });
+
+    const response = await axios.get(
+      `${API_BASE_URL}/api/wipe/certificate/${sessionIdToUse}`,
+      { responseType: 'blob' }
+    );
+
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `wipe-certificate-${sessionIdToUse}.pdf`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    toast.update(toastId, {
+      render: 'Certificate downloaded successfully!',
+      type: toast.TYPE.SUCCESS,
+      isLoading: false,
+      autoClose: 3000
+    });
+
+  } catch (error) {
+    console.error('Error downloading certificate:', error);
+    if (error.response?.status === 400) {
       toast.error('Wipe process is not completed yet');
-      return;
+    } else if (error.response?.status === 404) {
+      toast.error('Certificate not found. Session may have expired.');
+    } else {
+      toast.error('Failed to download certificate.');
     }
-
-    try {
-      const toastId = toast.loading('Generating certificate...', {
-        position: "top-right",
-        autoClose: false,
-      });
-
-      const response = await axios.get(
-        `${API_BASE_URL}/api/wipe/certificate/${currentSession}`,
-        { responseType: 'blob' }
-      );
-
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `wipe-certificate-${currentSession}.pdf`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-
-      toast.update(toastId, {
-        render: 'Certificate downloaded successfully!',
-        type: toast.TYPE.SUCCESS,
-        isLoading: false,
-        autoClose: 3000
-      });
-
-    } catch (error) {
-      console.error('Error downloading certificate:', error);
-      if (error.response?.status === 400) {
-        toast.error('Wipe process is not completed yet');
-      } else if (error.response?.status === 404) {
-        toast.error('Certificate not found. Session may have expired.');
-      } else {
-        toast.error('Failed to download certificate.');
-      }
-    }
-  };
+  }
+};
 
   // Download logs
-  const downloadLogs = async () => {
-    if (!currentSession) {
-      toast.error('No active wipe session found');
-      return;
-    }
+  // Download logs - UPDATED
+const downloadLogs = async () => {
+  const sessionIdToUse = currentSession;
+  
+  if (!sessionIdToUse) {
+    toast.error('No active wipe session found');
+    return;
+  }
 
+  try {
+    const toastId = toast.loading('Fetching logs...', {
+      position: "top-right",
+      autoClose: false,
+    });
+
+    // First check if session exists
     try {
-      const toastId = toast.loading('Fetching logs...', {
-        position: "top-right",
-        autoClose: false,
-      });
-
-      // First check if session exists
-      try {
-        await axios.get(`${API_BASE_URL}/api/wipe/status/${currentSession}`);
-      } catch (statusError) {
-        if (statusError.response?.status === 404) {
-          toast.update(toastId, {
-            render: 'Session expired. Retrieving from archive...',
-            type: toast.TYPE.WARNING,
-            isLoading: true,
-          });
-        }
+      await axios.get(`${API_BASE_URL}/api/wipe/status/${sessionIdToUse}`);
+    } catch (statusError) {
+      if (statusError.response?.status === 404) {
+        toast.update(toastId, {
+          render: 'Session expired. Retrieving from archive...',
+          type: toast.TYPE.WARNING,
+          isLoading: true,
+        });
       }
-
-      const response = await axios.get(
-        `${API_BASE_URL}/api/wipe/logs/${currentSession}`,
-        { 
-          responseType: 'blob',
-          timeout: 30000
-        }
-      );
-
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `wipe-logs-${currentSession}.txt`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      
-      setTimeout(() => window.URL.revokeObjectURL(url), 100);
-
-      toast.update(toastId, {
-        render: 'Logs downloaded successfully!',
-        type: toast.TYPE.SUCCESS,
-        isLoading: false,
-        autoClose: 3000
-      });
-
-    } catch (error) {
-      console.error('Error downloading logs:', error);
-      
-      let errorMessage = 'Failed to download logs';
-      if (error.response?.status === 404) {
-        errorMessage = 'Session not found. It may have expired or been cleaned up.';
-      } else if (error.code === 'ECONNABORTED') {
-        errorMessage = 'Request timeout. Server may be busy.';
-      } else if (error.response?.data?.error) {
-        errorMessage = error.response.data.error;
-      }
-      
-      toast.error(errorMessage, {
-        autoClose: 5000,
-      });
     }
-  };
 
-  // View logs in modal
-  const viewLogs = async () => {
-    if (!currentSession) {
-      toast.error('No session selected');
-      return;
+    const response = await axios.get(
+      `${API_BASE_URL}/api/wipe/logs/${sessionIdToUse}`,
+      { 
+        responseType: 'blob',
+        timeout: 30000
+      }
+    );
+
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `wipe-logs-${sessionIdToUse}.txt`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    
+    setTimeout(() => window.URL.revokeObjectURL(url), 100);
+
+    toast.update(toastId, {
+      render: 'Logs downloaded successfully!',
+      type: toast.TYPE.SUCCESS,
+      isLoading: false,
+      autoClose: 3000
+    });
+
+  } catch (error) {
+    console.error('Error downloading logs:', error);
+    
+    let errorMessage = 'Failed to download logs';
+    if (error.response?.status === 404) {
+      errorMessage = 'Session not found. It may have expired or been cleaned up.';
+    } else if (error.code === 'ECONNABORTED') {
+      errorMessage = 'Request timeout. Server may be busy.';
+    } else if (error.response?.data?.error) {
+      errorMessage = error.response.data.error;
     }
     
-    try {
-      const toastId = toast.loading('Loading logs...');
-      const response = await axios.get(`${API_BASE_URL}/api/wipe/logs/${currentSession}`, {
-        responseType: 'text'
-      });
-      setLogsContent(response.data);
-      setShowLogsModal(true);
-      toast.dismiss(toastId);
-    } catch (error) {
-      console.error('Error loading logs:', error);
-      toast.error('Failed to load logs');
-    }
-  };
+    toast.error(errorMessage, {
+      autoClose: 5000,
+    });
+  }
+};
+
+  // View logs in modal
+  // View logs in modal - UPDATED
+const viewLogs = async () => {
+  const sessionIdToUse = currentSession;
+  
+  if (!sessionIdToUse) {
+    toast.error('No session selected');
+    return;
+  }
+  
+  try {
+    const toastId = toast.loading('Loading logs...');
+    const response = await axios.get(`${API_BASE_URL}/api/wipe/logs/${sessionIdToUse}`, {
+      responseType: 'text'
+    });
+    setLogsContent(response.data);
+    setShowLogsModal(true);
+    toast.dismiss(toastId);
+  } catch (error) {
+    console.error('Error loading logs:', error);
+    toast.error('Failed to load logs');
+  }
+};
 
   // Download logs from modal
-  const downloadLogsFromModal = () => {
-    const blob = new Blob([logsContent], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `wipe-logs-${currentSession}.txt`;
-    a.click();
-    setShowLogsModal(false);
-  };
+  // Download logs from modal - UPDATED
+const downloadLogsFromModal = () => {
+  const sessionIdToUse = currentSession;
+  const blob = new Blob([logsContent], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `wipe-logs-${sessionIdToUse}.txt`;
+  a.click();
+  setShowLogsModal(false);
+};
 
   // Load session from list
   const loadSession = async (sessionId) => {
@@ -1186,24 +1210,25 @@ const checkWipeStatus = async (sessionId) => {
   };
 
   // Get status display
-  const getStatusText = () => {
-    if (!wipeStatus && !currentSession) return 'No active session';
-    
-    switch (wipeStatus) {
-      case 'starting':
-        return 'Starting...';
-      case 'in-progress':
-        return `In Progress (${wipeProgress}%)`;
-      case 'completed':
-        return 'Completed';
-      case 'failed':
-        return 'Failed';
-      default:
-        return sessionDetails?.status === 'in-progress' 
-          ? `In Progress (${wipeProgress}%)` 
-          : sessionDetails?.status || 'Unknown';
-    }
-  };
+  // Get status display - UPDATED
+const getStatusText = () => {
+  if (!currentSession) return 'No active session';
+  
+  switch (wipeStatus) {
+    case 'starting':
+      return 'Starting...';
+    case 'in-progress':
+      return `In Progress (${wipeProgress}%)`;
+    case 'completed':
+      return 'Completed';
+    case 'failed':
+      return 'Failed';
+    default:
+      return sessionDetails?.status === 'in-progress' 
+        ? `In Progress (${wipeProgress}%)` 
+        : sessionDetails?.status || 'Unknown';
+  }
+};
 
   // Get status color
   const getStatusColor = () => {
@@ -1284,17 +1309,17 @@ const checkWipeStatus = async (sessionId) => {
   isOpen={showS3UploadModal}
   onClose={() => setShowS3UploadModal(false)}
   selectedFiles={filesForBackup}
-  sessionId={currentSession}
+  sessionId={currentSession} // Ensure sessionId is passed
   onUploadComplete={handleUploadComplete}
 />
       
       <LogsModal
-        isOpen={showLogsModal}
-        onClose={() => setShowLogsModal(false)}
-        content={logsContent}
-        sessionId={currentSession}
-        onDownload={downloadLogsFromModal}
-      />
+  isOpen={showLogsModal}
+  onClose={() => setShowLogsModal(false)}
+  content={logsContent}
+  sessionId={currentSession} // This should now always have a value
+  onDownload={downloadLogsFromModal}
+/>
       
       {/* Sessions List Modal */}
       {showSessionsList && (
