@@ -1,35 +1,34 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { useEffect, useRef, useState } from 'react';
+import {
+    FiActivity,
+    FiAlertCircle,
+    FiAlertTriangle,
+    FiArchive,
+    FiCheck,
+    FiChevronDown,
+    FiChevronUp,
+    FiClock,
+    FiCloud,
+    FiDownload,
+    FiEye,
+    FiEyeOff,
+    FiFile,
+    FiFolder,
+    FiHardDrive,
+    FiInfo,
+    FiList,
+    FiPlus,
+    FiRefreshCw,
+    FiSearch,
+    FiTrash2,
+    FiUpload,
+    FiX
+} from 'react-icons/fi';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-import {
-  FiFolder,
-  FiFile,
-  FiDownload,
-  FiTrash2,
-  FiRefreshCw,
-  FiCheck,
-  FiAlertCircle,
-  FiHardDrive,
-  FiClock,
-  FiActivity,
-  FiUpload,
-  FiX,
-  FiChevronDown,
-  FiChevronUp,
-  FiAlertTriangle,
-  FiInfo,
-  FiExternalLink,
-  FiPlus,
-  FiSearch,
-  FiEye,
-  FiEyeOff,
-  FiArchive,
-  FiList,
-  FiCloud
-} from 'react-icons/fi';
 import S3UploadModal from '../../components/S3UploadModal.js';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
@@ -450,6 +449,9 @@ const ConfirmationDialog = ({
     </h3>
     <button
       onClick={() => {
+        console.log('[ConfirmationDialog] Backup button clicked');
+        console.log('[ConfirmationDialog] items:', items);
+        console.log('[ConfirmationDialog] items length:', items?.length);
         // This will be handled by parent component
         if (onBackupRequest) {
           onBackupRequest(items);
@@ -585,8 +587,18 @@ const [filesForBackup, setFilesForBackup] = useState([]);
 
 
 const handleBackupRequest = (items) => {
+  console.log('[WipePage] handleBackupRequest called with items:', items);
+  console.log('[WipePage] items length:', items?.length);
+  console.log('[WipePage] items type:', typeof items, Array.isArray(items));
+  
+  // Set files first, then open modal in next render cycle
   setFilesForBackup(items);
-  setShowS3UploadModal(true);
+  
+  // Use setTimeout to ensure state updates before opening modal
+  setTimeout(() => {
+    console.log('[WipePage] Opening S3 upload modal');
+    setShowS3UploadModal(true);
+  }, 0);
 };
 
 // Add this function for upload completion
@@ -680,24 +692,41 @@ const handleUploadComplete = (result) => {
 
   // Handle file selection
   const handleFileSelection = (selectedItems) => {
+  console.log('[WipePage] handleFileSelection called with:', selectedItems);
+  console.log('[WipePage] Current paths before adding:', paths);
+  
   const newPaths = [...paths];
+  let addedCount = 0;
   
   selectedItems.forEach(item => {
-    if (item.type === 'file') {
-      // Use the item.path which is already the relative path from BASE_DIRECTORY
-      if (!newPaths.some(p => p.path === item.path)) {
-        newPaths.push({
-          id: Date.now() + Math.random(),
-          path: item.path, // This is already the correct relative path
-          type: 'file',
-          name: item.name
-        });
-      }
+    console.log('[WipePage] Processing item:', item);
+    
+    // Add both files and directories
+    if (!newPaths.some(p => p.path === item.path)) {
+      const newItem = {
+        id: Date.now() + Math.random(),
+        path: item.path, // This is already the correct relative path
+        type: item.type || 'file',
+        name: item.name
+      };
+      newPaths.push(newItem);
+      addedCount++;
+      console.log('[WipePage] Added item:', newItem);
+    } else {
+      console.log('[WipePage] Item already exists in paths:', item.path);
     }
   });
   
+  console.log('[WipePage] New paths after adding:', newPaths);
+  console.log('[WipePage] Added count:', addedCount);
+  
   setPaths(newPaths);
-  toast.success(`Added ${selectedItems.length} file(s) to wipe list`);
+  
+  if (addedCount > 0) {
+    toast.success(`Added ${addedCount} item(s) to wipe list`);
+  } else {
+    toast.info('Items already in list');
+  }
 };
 
   // Manual path input
@@ -802,6 +831,9 @@ const clearAllPaths = () => {
     toast.error('Please select at least one file or folder');
     return;
   }
+
+  console.log('[WipePage] startWipe - paths:', paths);
+  console.log('[WipePage] startWipe - paths length:', paths.length);
 
   // Generate a sessionId upfront to use consistently
   const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
