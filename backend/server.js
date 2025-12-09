@@ -1541,7 +1541,7 @@ app.post('/api/s3/upload', async (req, res) => {
   try {
     console.log('📤 S3 Upload request received');
     
-    const { files, password, sessionId, username } = req.body; // Add username from request
+    const { files, password, sessionId, username } = req.body;
     
     // Validate input
     if (!files || !Array.isArray(files) || files.length === 0) {
@@ -1558,9 +1558,14 @@ app.post('/api/s3/upload', async (req, res) => {
       });
     }
     
-    // Use provided username or default
-    const user = username || 'default-user';
-    console.log(`👤 User for backup: ${user}`);
+    if (!username) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Username is required' 
+      });
+    }
+    
+    console.log(`👤 User for backup: ${username}`);
     
     // Test S3 connection first
     console.log('🔄 Testing S3 connection before upload...');
@@ -1570,6 +1575,7 @@ app.post('/api/s3/upload', async (req, res) => {
     const uploadResults = [];
     const errors = [];
     const backupUrls = [];
+    const fileDetails = [];
     
     // Process each file
     for (const fileInfo of files) {
@@ -1609,15 +1615,23 @@ app.post('/api/s3/upload', async (req, res) => {
         
         if (result.success) {
           uploadResults.push(result);
-          backupUrls.push({
+          
+          const backupInfo = {
             fileName: result.fileName,
             s3Url: result.s3Url,
             fileUrl: result.fileUrl,
+            fileKey: result.fileKey,
             encrypted: result.encrypted,
             size: result.size,
             uploadedAt: result.uploadedAt,
-            isRealS3: result.isRealS3
-          });
+            isRealS3: result.isRealS3,
+            region: result.region,
+            bucket: result.bucket
+          };
+          
+          backupUrls.push(result.s3Url);
+          fileDetails.push(backupInfo);
+          
           console.log(`✅ Uploaded: ${fileName} (${result.isRealS3 ? 'S3' : 'Local'})`);
         } else {
           errors.push({ 
@@ -1635,31 +1649,69 @@ app.post('/api/s3/upload', async (req, res) => {
       }
     }
     
-    // Save backup information to MongoDB
+    // Save backup information to MongoDB - APPEND to existing array
+    let savedBackup = null;
+    let action = 'created'; // Track whether we created or appended
+    let existingBackupFound = false;
+    
     if (backupUrls.length > 0) {
       try {
-        const backupData = {
-          username: user,
-          sessionId: sessionId,
-          backupUrls: backupUrls.map(item => item.s3Url),
-          fileDetails: backupUrls, // Store detailed file info
-          access: [user] // User can access their own backups
-        };
+        console.log('💾 Saving/Updating backup in MongoDB...');
         
-        console.log('💾 Saving backup to MongoDB...');
-        const savedBackup = await UserBackup.findOneAndUpdate(
-          { sessionId: sessionId },
-          backupData,
-          { 
-            upsert: true, 
-            new: true,
-            setDefaultsOnInsert: true 
-          }
-        );
+        // Check if backup already exists for this session
+        let existingBackup = await UserBackup.findOne({ sessionId: sessionId });
         
-        console.log(`✅ Backup saved to MongoDB for session: ${sessionId}`);
-        console.log(`   Backup ID: ${savedBackup._id}`);
-        console.log(`   Files: ${savedBackup.backupUrls.length}`);
+        if (existingBackup) {
+          existingBackupFound = true;
+          action = 'appended';
+          console.log(`📝 Found existing backup for session ${sessionId}, appending new files...`);
+          
+          // Append new backup URLs to existing array
+          existingBackup.backupUrls = [
+            ...(existingBackup.backupUrls || []),
+            ...backupUrls
+          ];
+          
+          // Append new file details to existing array
+          existingBackup.fileDetails = [
+            ...(existingBackup.fileDetails || []),
+            ...fileDetails
+          ];
+          
+          // Update file count
+          existingBackup.fileCount = existingBackup.backupUrls.length;
+          
+          // Update timestamps
+          existingBackup.uploadedAt = new Date();
+          existingBackup.updatedAt = new Date();
+          
+          // Save the updated document
+          savedBackup = await existingBackup.save();
+          
+          console.log(`✅ Appended ${backupUrls.length} new files to existing backup`);
+          console.log(`   Total files in backup: ${savedBackup.backupUrls.length}`);
+          console.log(`   Backup ID: ${savedBackup._id}`);
+        } else {
+          console.log(`📝 Creating new backup for session ${sessionId}...`);
+          
+          // Create new backup document
+          const backupData = {
+            username: username,
+            sessionId: sessionId,
+            backupUrls: backupUrls,
+            fileDetails: fileDetails,
+            fileCount: backupUrls.length,
+            encrypted: !!password,
+            access: [username],
+            uploadedAt: new Date()
+          };
+          
+          savedBackup = await UserBackup.create(backupData);
+          
+          console.log(`✅ Created new backup in MongoDB for session: ${sessionId}`);
+          console.log(`   Backup ID: ${savedBackup._id}`);
+          console.log(`   Files: ${savedBackup.backupUrls.length}`);
+        }
         
         // Also store in wipe session for immediate access
         if (wipeSessions.has(sessionId)) {
@@ -1670,6 +1722,7 @@ app.post('/api/s3/upload', async (req, res) => {
           session.backups.push({
             backupId: savedBackup._id,
             urls: backupUrls,
+            fileDetails: fileDetails,
             savedAt: new Date().toISOString()
           });
           updateWipeSession(sessionId, { backups: session.backups });
@@ -1677,7 +1730,8 @@ app.post('/api/s3/upload', async (req, res) => {
         
       } catch (mongoError) {
         console.error('❌ Failed to save backup to MongoDB:', mongoError.message);
-        // Continue even if MongoDB save fails
+        console.error('MongoDB Error Stack:', mongoError.stack);
+        // Don't fail the whole request, just log the error
       }
     }
     
@@ -1689,9 +1743,14 @@ app.post('/api/s3/upload', async (req, res) => {
       failed: errors.length,
       uploads: uploadResults,
       backupUrls: backupUrls,
+      fileDetails: fileDetails,
       errors: errors,
       sessionId: sessionId,
-      username: user,
+      username: username,
+      mongoBackupId: savedBackup?._id || null,
+      action: action, // 'created' or 'appended'
+      existingBackupFound: existingBackupFound,
+      totalFilesInBackup: savedBackup?.backupUrls?.length || 0,
       note: uploadResults.length > 0 && uploadResults[0].isRealS3 
         ? 'Files uploaded to AWS S3 and saved to database' 
         : 'Files saved locally (S3 simulation mode)'
@@ -1699,6 +1758,7 @@ app.post('/api/s3/upload', async (req, res) => {
     
   } catch (error) {
     console.error('❌ S3 upload route error:', error);
+    console.error('Full error stack:', error.stack);
     
     res.status(500).json({ 
       success: false,
