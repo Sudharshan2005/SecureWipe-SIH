@@ -12,7 +12,7 @@ const multer = require('multer')
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 6000;
 
 // Configure logging
 const logger = winston.createLogger({
@@ -46,7 +46,9 @@ app.use(cors({
     'http://localhost:5000',
     'http://localhost:5173',
     'http://127.0.0.1:3000',
-    'http://127.0.0.1:5000'
+    'http://127.0.0.1:5000',
+    'http://localhost:6000',
+    'http://127.0.0.1:6000'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -1421,11 +1423,8 @@ app.post('/api/s3/upload', async (req, res) => {
       try {
         console.log('\n📄 Processing file:', fileInfo);
         
-<<<<<<< HEAD
-        const filePath = fileInfo.path;
-=======
+
         let filePath = fileInfo.path;
->>>>>>> 0bbaca6b47596b08b73534a516850b424d6425d6
         const fileName = fileInfo.name || path.basename(filePath || '');
         
         if (!filePath) {

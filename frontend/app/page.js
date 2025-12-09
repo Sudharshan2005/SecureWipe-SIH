@@ -33,7 +33,7 @@ import {
 import S3UploadModal from '../components/S3UploadModal.js';
 import { useSessionManager } from '../hooks/useSessionManager';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:6000';
 
 // File Browser Modal Component
 const FileBrowserModal = ({ 
