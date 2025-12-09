@@ -47,7 +47,6 @@ import {
   FiVideo,
   FiCheckCircle,
   FiUserCheck,
-  FiFileText,
 } from 'react-icons/fi';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
@@ -80,7 +79,7 @@ export default function Dashboard() {
   const [registeringFace, setRegisteringFace] = useState(false);
   const [showFaceVerificationModal, setShowFaceVerificationModal] = useState(false);
   const [verificationStep, setVerificationStep] = useState('idle'); // idle, scanning, success, failed
-  const [currentDownloadAction, setCurrentDownloadAction] = useState(null); // {type: 'logs' | 'certificate' | 'backup', data: {...}}
+  const [currentBackupToDownload, setCurrentBackupToDownload] = useState(null);
 
   // Get username from sessionStorage
   useEffect(() => {
@@ -183,8 +182,7 @@ export default function Dashboard() {
     try {
       setRegisteringFace(true);
       toast.info('Face registration starting. Please look at your camera...', {
-        autoClose: false,
-        position: 'bottom-center'
+        autoClose: false
       });
 
       const response = await axios.post(`${FACE_VERIFICATION_URL}/api/face/register`, {
@@ -192,87 +190,41 @@ export default function Dashboard() {
       });
 
       if (response.data.success) {
-        toast.update(toast.loading('Registration in progress...'), {
-          render: 'Looking for camera... Please position your face clearly.',
-          type: 'info',
-          isLoading: true,
-          autoClose: false,
-          position: 'bottom-center'
-        });
-
         // Poll for registration completion
         let attempts = 0;
-        const maxAttempts = 40;
+        const maxAttempts = 30; // 30 seconds max
         const checkInterval = setInterval(async () => {
           attempts++;
+          const checkResponse = await axios.post(`${FACE_VERIFICATION_URL}/api/face/check-registered`, {
+            username
+          });
           
-          try {
-            const checkResponse = await axios.post(`${FACE_VERIFICATION_URL}/api/face/check-registered`, {
-              username
-            });
-            
-            if (checkResponse.data.registered) {
-              clearInterval(checkInterval);
-              setFaceRegistered(true);
-              setRegisteringFace(false);
-              toast.dismiss();
-              toast.success('Face registration completed successfully!', {
-                position: 'bottom-center'
-              });
-            } else if (attempts >= maxAttempts) {
-              clearInterval(checkInterval);
-              setRegisteringFace(false);
-              toast.dismiss();
-              toast.error('Face registration timeout. Please try again.', {
-                position: 'bottom-center'
-              });
-            }
-          } catch (error) {
-            if (attempts >= maxAttempts) {
-              clearInterval(checkInterval);
-              setRegisteringFace(false);
-              toast.dismiss();
-              toast.error('Registration check failed. Please try again.', {
-                position: 'bottom-center'
-              });
-            }
+          if (checkResponse.data.registered) {
+            clearInterval(checkInterval);
+            setFaceRegistered(true);
+            setRegisteringFace(false);
+            toast.dismiss();
+            toast.success('Face registration completed successfully!');
+          } else if (attempts >= maxAttempts) {
+            clearInterval(checkInterval);
+            setRegisteringFace(false);
+            toast.dismiss();
+            toast.error('Face registration timeout. Please try again.');
           }
         }, 1000);
       } else {
         setRegisteringFace(false);
-        toast.dismiss();
-        toast.error(response.data.error || 'Failed to start face registration');
+        toast.error('Failed to start face registration');
       }
     } catch (error) {
       console.error('Error registering face:', error);
       setRegisteringFace(false);
-      toast.dismiss();
-      
-      if (error.response?.status === 503) {
-        toast.error('Camera not available. Please check camera connection and permissions.', {
-          position: 'bottom-center'
-        });
-      } else {
-        toast.error('Face registration service unavailable. Please try again later.', {
-          position: 'bottom-center'
-        });
-      }
+      toast.error('Face registration service unavailable');
     }
   };
 
-  const verifyFaceForDownload = (type, data) => {
-    if (!faceRegistered) {
-      const shouldRegister = window.confirm(
-        'Face verification is required for downloads, but you have not registered your face yet.\n\nWould you like to register now?'
-      );
-      
-      if (shouldRegister) {
-        registerFace();
-      }
-      return;
-    }
-
-    setCurrentDownloadAction({ type, data });
+  const verifyFaceForDownload = async (backupUrl, backupName) => {
+    setCurrentBackupToDownload({ url: backupUrl, name: backupName });
     setShowFaceVerificationModal(true);
     setVerificationStep('scanning');
   };
@@ -280,10 +232,7 @@ export default function Dashboard() {
   const performFaceVerification = async () => {
     try {
       setVerifyingFace(true);
-      toast.info('Starting face verification...', {
-        position: 'bottom-center'
-      });
-
+      
       const response = await axios.post(`${FACE_VERIFICATION_URL}/api/face/verify`, {
         username
       });
@@ -292,75 +241,37 @@ export default function Dashboard() {
       
       if (response.data.verified) {
         setVerificationStep('success');
-        toast.success('Face verified successfully!', {
-          position: 'bottom-center'
-        });
         
-        // Wait a moment to show success, then perform the download action
+        // Wait a moment to show success, then download
         setTimeout(() => {
-          executeDownloadAction();
+          downloadBackupAfterVerification();
           setShowFaceVerificationModal(false);
           setVerificationStep('idle');
         }, 1500);
         
       } else {
         setVerificationStep('failed');
-        toast.error('Face verification failed. Please ensure good lighting and try again.', {
-          position: 'bottom-center'
-        });
+        toast.error('Face verification failed. Please try again.');
       }
     } catch (error) {
       console.error('Error verifying face:', error);
       setVerifyingFace(false);
       setVerificationStep('failed');
-      
-      if (error.response?.status === 503) {
-        toast.error('Camera not available. Please check camera connection.', {
-          position: 'bottom-center'
-        });
-      } else if (error.response?.status === 404) {
-        toast.error('Face not registered. Please register your face first.', {
-          position: 'bottom-center'
-        });
-      } else {
-        toast.error('Face verification service unavailable. Please try again later.', {
-          position: 'bottom-center'
-        });
-      }
+      toast.error('Face verification service unavailable');
     }
   };
 
-  const executeDownloadAction = () => {
-    if (!currentDownloadAction) return;
+  const downloadBackupAfterVerification = () => {
+    if (!currentBackupToDownload) return;
     
-    const { type, data } = currentDownloadAction;
+    const { url, name } = currentBackupToDownload;
     
-    switch (type) {
-      case 'logs':
-        downloadLogsDirect(data.sessionId);
-        break;
-      case 'certificate':
-        downloadCertificateDirect(data.sessionId);
-        break;
-      case 'backup':
-        downloadBackupDirect(data.url, data.name);
-        break;
-      case 'viewLogs':
-        viewLogsDirect(data.sessionId);
-        break;
-    }
-    
-    // Log the successful verification
-    logVerificationEvent(username, type, true);
-  };
-
-  const downloadBackupDirect = (backupUrl, backupName) => {
     const toastId = toast.loading('Starting download...');
     
     // Direct download from S3 URL
     const link = document.createElement('a');
-    link.href = backupUrl;
-    link.download = backupName || `backup-${Date.now()}.zip`;
+    link.href = url;
+    link.download = name || `backup-${Date.now()}.zip`;
     link.target = '_blank';
     link.click();
     
@@ -370,102 +281,19 @@ export default function Dashboard() {
       isLoading: false,
       autoClose: 2000
     });
+
+    // Log the successful verification and download
+    logVerificationEvent(username, name, true);
   };
 
-  const downloadCertificateDirect = async (sessionId) => {
-    try {
-      const toastId = toast.loading('Downloading certificate...');
-      
-      const session = sessions.find(s => s.sessionId === sessionId);
-      
-      if (session?.certificateUrl) {
-        window.open(session.certificateUrl, '_blank');
-      } else {
-        const response = await axios.get(
-          `${API_BASE_URL}/api/wipe/certificate/${sessionId}`,
-          { responseType: 'blob' }
-        );
-        
-        const url = window.URL.createObjectURL(new Blob([response.data]));
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `certificate-${sessionId}.pdf`;
-        link.click();
-        URL.revokeObjectURL(url);
-      }
-      
-      toast.update(toastId, {
-        render: 'Certificate downloaded!',
-        type: 'success',
-        isLoading: false,
-        autoClose: 2000
-      });
-      
-    } catch (error) {
-      console.error('Error downloading certificate:', error);
-      toast.error('Failed to download certificate');
-    }
-  };
-
-  const downloadLogsDirect = async (sessionId) => {
-    try {
-      const toastId = toast.loading('Downloading logs...');
-      
-      const session = sessions.find(s => s.sessionId === sessionId);
-      
-      if (session?.logsUrl) {
-        window.open(session.logsUrl, '_blank');
-      } else {
-        const response = await axios.get(
-          `${API_BASE_URL}/api/wipe/logs/${sessionId}`,
-          { responseType: 'blob' }
-        );
-        
-        const url = window.URL.createObjectURL(new Blob([response.data]));
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `logs-${sessionId}.txt`;
-        link.click();
-        URL.revokeObjectURL(url);
-      }
-      
-      toast.update(toastId, {
-        render: 'Logs downloaded!',
-        type: 'success',
-        isLoading: false,
-        autoClose: 2000
-      });
-      
-    } catch (error) {
-      console.error('Error downloading logs:', error);
-      toast.error('Failed to download logs');
-    }
-  };
-
-  const viewLogsDirect = async (sessionId) => {
-    try {
-      const toastId = toast.loading('Loading logs...');
-      
-      const response = await axios.get(`${API_BASE_URL}/api/wipe/logs/${sessionId}`);
-      
-      setLogsContent(response.data);
-      setShowLogsModal(true);
-      toast.dismiss(toastId);
-      
-    } catch (error) {
-      console.error('Error loading logs:', error);
-      toast.error('Failed to load logs');
-    }
-  };
-
-  const logVerificationEvent = async (username, action, success) => {
+  const logVerificationEvent = async (username, filename, success) => {
     try {
       await axios.post(`${API_BASE_URL}/api/logs/verification`, {
         username,
-        action,
+        filename,
         success,
         timestamp: new Date().toISOString(),
-        verified_action: currentDownloadAction?.type
+        action: 'backup_download'
       });
     } catch (error) {
       console.error('Error logging verification:', error);
@@ -516,6 +344,97 @@ export default function Dashboard() {
     }
   };
 
+  const downloadCertificate = async (sessionId) => {
+    try {
+      const toastId = toast.loading('Downloading certificate...');
+      
+      const session = sessions.find(s => s.sessionId === sessionId);
+      
+      if (session?.certificateUrl) {
+        window.open(session.certificateUrl, '_blank');
+      } else {
+        const response = await axios.get(
+          `${API_BASE_URL}/api/wipe/certificate/${sessionId}`,
+          { responseType: 'blob' }
+        );
+        
+        const url = window.URL.createObjectURL(new Blob([response.data]));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `certificate-${sessionId}.pdf`;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+      
+      toast.update(toastId, {
+        render: 'Certificate downloaded!',
+        type: 'success',
+        isLoading: false,
+        autoClose: 2000
+      });
+      
+    } catch (error) {
+      console.error('Error downloading certificate:', error);
+      toast.error('Failed to download certificate');
+    }
+  };
+
+  const downloadLogs = async (sessionId) => {
+    try {
+      const toastId = toast.loading('Downloading logs...');
+      
+      const session = sessions.find(s => s.sessionId === sessionId);
+      
+      if (session?.logsUrl) {
+        window.open(session.logsUrl, '_blank');
+      } else {
+        const response = await axios.get(
+          `${API_BASE_URL}/api/wipe/logs/${sessionId}`,
+          { responseType: 'blob' }
+        );
+        
+        const url = window.URL.createObjectURL(new Blob([response.data]));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `logs-${sessionId}.txt`;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+      
+      toast.update(toastId, {
+        render: 'Logs downloaded!',
+        type: 'success',
+        isLoading: false,
+        autoClose: 2000
+      });
+      
+    } catch (error) {
+      console.error('Error downloading logs:', error);
+      toast.error('Failed to download logs');
+    }
+  };
+
+  const viewLogs = async (sessionId) => {
+    try {
+      const toastId = toast.loading('Loading logs...');
+      
+      const response = await axios.get(`${API_BASE_URL}/api/wipe/logs/${sessionId}`);
+      
+      setLogsContent(response.data);
+      setShowLogsModal(true);
+      toast.dismiss(toastId);
+      
+    } catch (error) {
+      console.error('Error loading logs:', error);
+      toast.error('Failed to load logs');
+    }
+  };
+
+  const viewBackupDetails = (backup) => {
+    setSelectedSession(backup);
+    setShowSessionDetails(true);
+  };
+
   const shareSession = async (sessionId, email) => {
     try {
       const toastId = toast.loading('Sharing session...');
@@ -557,9 +476,7 @@ export default function Dashboard() {
   const testFaceVerification = async () => {
     try {
       setVerifyingFace(true);
-      toast.info('Testing face verification...', {
-        position: 'bottom-center'
-      });
+      toast.info('Testing face verification...');
       
       const response = await axios.post(`${FACE_VERIFICATION_URL}/api/face/quick-verify`, {
         username
@@ -568,57 +485,19 @@ export default function Dashboard() {
       setVerifyingFace(false);
       
       if (response.data.verified) {
-        toast.success('Face verification test successful!', {
-          position: 'bottom-center'
-        });
+        toast.success('Face verification test successful!');
       } else {
-        toast.error('Face verification test failed. Please ensure proper lighting and camera positioning.', {
-          position: 'bottom-center'
-        });
+        toast.error('Face verification test failed. Please ensure proper lighting and camera positioning.');
       }
     } catch (error) {
       setVerifyingFace(false);
-      toast.error('Verification test failed. Service may be unavailable.', {
-        position: 'bottom-center'
-      });
+      toast.error('Verification test failed. Service may be unavailable.');
     }
   };
 
   // Face Verification Modal Component
   const FaceVerificationModal = () => {
     if (!showFaceVerificationModal) return null;
-    
-    const getActionName = () => {
-      if (!currentDownloadAction) return 'download';
-      switch (currentDownloadAction.type) {
-        case 'logs':
-          return 'download logs';
-        case 'certificate':
-          return 'download certificate';
-        case 'backup':
-          return 'download backup';
-        case 'viewLogs':
-          return 'view logs';
-        default:
-          return 'download';
-      }
-    };
-    
-    const getActionDetails = () => {
-      if (!currentDownloadAction) return null;
-      switch (currentDownloadAction.type) {
-        case 'logs':
-          return `Session: ${currentDownloadAction.data.sessionId?.substring(0, 12)}...`;
-        case 'certificate':
-          return `Session: ${currentDownloadAction.data.sessionId?.substring(0, 12)}...`;
-        case 'backup':
-          return `File: ${currentDownloadAction.data.name}`;
-        case 'viewLogs':
-          return `Session: ${currentDownloadAction.data.sessionId?.substring(0, 12)}...`;
-        default:
-          return null;
-      }
-    };
     
     const renderStepContent = () => {
       switch (verificationStep) {
@@ -641,22 +520,11 @@ export default function Dashboard() {
               </div>
               
               <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                Face Verification Required
+                Verifying Your Identity
               </h3>
-              <p className="text-gray-600 mb-4">
-                To {getActionName()}, please verify your identity
+              <p className="text-gray-600 mb-6">
+                Please look directly at your camera and stay still...
               </p>
-              
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
-                <p className="text-sm text-blue-800">
-                  <span className="font-semibold">Action:</span> {getActionName()}
-                </p>
-                {getActionDetails() && (
-                  <p className="text-sm text-blue-800 mt-1">
-                    <span className="font-semibold">Details:</span> {getActionDetails()}
-                  </p>
-                )}
-              </div>
               
               {verifyingFace ? (
                 <div className="flex items-center justify-center space-x-2">
@@ -668,7 +536,7 @@ export default function Dashboard() {
                   onClick={performFaceVerification}
                   className="px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-500 text-white rounded-lg hover:from-blue-600 hover:to-purple-600 transition-all font-semibold"
                 >
-                  Start Face Verification
+                  Start Verification
                 </button>
               )}
             </div>
@@ -685,7 +553,7 @@ export default function Dashboard() {
                 Verification Successful!
               </h3>
               <p className="text-gray-600 mb-6">
-                Your identity has been verified. {getActionName().charAt(0).toUpperCase() + getActionName().slice(1)} will start automatically.
+                Your identity has been verified. Download will start automatically.
               </p>
               
               <div className="bg-green-50 border border-green-200 rounded-lg p-4">
@@ -693,13 +561,8 @@ export default function Dashboard() {
                   <span className="font-semibold">User:</span> {username}
                 </p>
                 <p className="text-green-800 text-sm mt-1">
-                  <span className="font-semibold">Action:</span> {getActionName()}
+                  <span className="font-semibold">File:</span> {currentBackupToDownload?.name}
                 </p>
-                {getActionDetails() && (
-                  <p className="text-green-800 text-sm mt-1">
-                    <span className="font-semibold">Details:</span> {getActionDetails()}
-                  </p>
-                )}
               </div>
             </div>
           );
@@ -729,7 +592,6 @@ export default function Dashboard() {
                   onClick={() => {
                     setShowFaceVerificationModal(false);
                     setVerificationStep('idle');
-                    setCurrentDownloadAction(null);
                   }}
                   className="w-full px-6 py-3 border-2 border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
                 >
@@ -750,17 +612,17 @@ export default function Dashboard() {
           <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-t-2xl p-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-3">
-                <FiShield className="w-8 h-8 text-white" />
+                <FiUserCheck className="w-8 h-8 text-white" />
                 <div>
-                  <h2 className="text-xl font-bold text-white">Secure Face Verification</h2>
-                  <p className="text-blue-100 text-sm">Biometric authentication required</p>
+                  <h2 className="text-xl font-bold text-white">Face Verification</h2>
+                  <p className="text-blue-100 text-sm">Secure biometric authentication</p>
                 </div>
               </div>
               <button 
                 onClick={() => {
                   setShowFaceVerificationModal(false);
                   setVerificationStep('idle');
-                  setCurrentDownloadAction(null);
+                  setCurrentBackupToDownload(null);
                 }} 
                 className="p-2 hover:bg-blue-700 rounded-lg transition-colors"
               >
@@ -776,13 +638,9 @@ export default function Dashboard() {
               <div className="mt-8 pt-6 border-t border-gray-200">
                 <h4 className="font-semibold text-gray-900 mb-3 flex items-center">
                   <FiInfo className="w-4 h-4 mr-2 text-blue-600" />
-                  Security Requirements:
+                  Tips for Best Results:
                 </h4>
                 <ul className="text-sm text-gray-600 space-y-2">
-                  <li className="flex items-center">
-                    <div className="w-2 h-2 bg-blue-500 rounded-full mr-2"></div>
-                    Face verification is required for all sensitive downloads
-                  </li>
                   <li className="flex items-center">
                     <div className="w-2 h-2 bg-blue-500 rounded-full mr-2"></div>
                     Ensure good lighting on your face
@@ -793,7 +651,11 @@ export default function Dashboard() {
                   </li>
                   <li className="flex items-center">
                     <div className="w-2 h-2 bg-blue-500 rounded-full mr-2"></div>
-                    All verification attempts are logged for security audit
+                    Remove glasses if they cause glare
+                  </li>
+                  <li className="flex items-center">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full mr-2"></div>
+                    Keep your face within the frame
                   </li>
                 </ul>
               </div>
@@ -816,9 +678,6 @@ export default function Dashboard() {
               <div>
                 <h2 className="text-2xl font-bold">Session Logs</h2>
                 <p className="text-gray-300 mt-1">Detailed wipe process log</p>
-                <div className="text-sm text-gray-400 mt-1">
-                  Session: {selectedSession?.sessionId?.substring(0, 12)}...
-                </div>
               </div>
               <button 
                 onClick={() => setShowLogsModal(false)} 
@@ -849,12 +708,18 @@ export default function Dashboard() {
                 </button>
                 <button
                   onClick={() => {
-                    verifyFaceForDownload('logs', { sessionId: selectedSession?.sessionId });
+                    const blob = new Blob([logsContent], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `logs-${selectedSession?.sessionId || 'session'}.txt`;
+                    a.click();
+                    URL.revokeObjectURL(url);
                   }}
-                  className="px-6 py-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg hover:from-green-600 hover:to-emerald-700 flex items-center space-x-2"
+                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center space-x-2"
                 >
                   <FiDownload className="w-4 h-4" />
-                  <span>Download Logs (Face Verify)</span>
+                  <span>Download Logs</span>
                 </button>
               </div>
             </div>
@@ -967,9 +832,6 @@ export default function Dashboard() {
                 <p className="text-gray-300 mt-1">
                   Complete information about {isBackup ? 'backup' : 'wipe session'}
                 </p>
-                <div className="text-sm text-gray-400 mt-1">
-                  All downloads require face verification for security
-                </div>
               </div>
               <button 
                 onClick={() => {
@@ -1090,7 +952,7 @@ export default function Dashboard() {
                             View
                           </button>
                           <button
-                            onClick={() => verifyFaceForDownload('backup', { url, name: fileName })}
+                            onClick={() => verifyFaceForDownload(url, fileName)}
                             className="px-2 py-1 bg-gradient-to-r from-green-500 to-teal-500 text-white rounded hover:from-green-600 hover:to-teal-600 text-xs flex items-center"
                           >
                             <FiDownload className="w-3 h-3 mr-1" />
@@ -1127,26 +989,26 @@ export default function Dashboard() {
               {!isBackup && (
                 <>
                   <button
-                    onClick={() => verifyFaceForDownload('viewLogs', { sessionId: selectedSession.sessionId })}
-                    className="px-4 py-2 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-lg hover:from-blue-700 hover:to-cyan-700 flex items-center space-x-2"
+                    onClick={() => viewLogs(selectedSession.sessionId)}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center space-x-2"
                   >
                     <FiEye className="w-4 h-4" />
-                    <span>View Logs (Face Verify)</span>
+                    <span>View Logs</span>
                   </button>
                   <button
-                    onClick={() => verifyFaceForDownload('logs', { sessionId: selectedSession.sessionId })}
-                    className="px-4 py-2 bg-gradient-to-r from-gray-800 to-gray-900 text-white rounded-lg hover:from-gray-900 hover:to-black flex items-center space-x-2"
+                    onClick={() => downloadLogs(selectedSession.sessionId)}
+                    className="px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-900 flex items-center space-x-2"
                   >
                     <FiDownload className="w-4 h-4" />
-                    <span>Download Logs (Face Verify)</span>
+                    <span>Download Logs</span>
                   </button>
                   {selectedSession.status === 'completed' && (
                     <button
-                      onClick={() => verifyFaceForDownload('certificate', { sessionId: selectedSession.sessionId })}
-                      className="px-4 py-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg hover:from-green-700 hover:to-emerald-700 flex items-center space-x-2"
+                      onClick={() => downloadCertificate(selectedSession.sessionId)}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center space-x-2"
                     >
-                      <FiFileText className="w-4 h-4" />
-                      <span>Certificate (Face Verify)</span>
+                      <FiDownload className="w-4 h-4" />
+                      <span>Certificate</span>
                     </button>
                   )}
                 </>
@@ -1157,7 +1019,7 @@ export default function Dashboard() {
                     // Download all with face verification for the first file
                     const firstUrl = selectedSession.backupUrls[0];
                     const firstName = firstUrl.split('/').pop() || `backup-1`;
-                    verifyFaceForDownload('backup', { url: firstUrl, name: firstName });
+                    verifyFaceForDownload(firstUrl, firstName);
                   }}
                   className="px-4 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg hover:from-blue-700 hover:to-purple-700 flex items-center space-x-2"
                 >
@@ -1167,7 +1029,7 @@ export default function Dashboard() {
               )}
               <button
                 onClick={() => openShareModal(selectedSession.sessionId)}
-                className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-lg hover:from-purple-700 hover:to-pink-700 flex items-center space-x-2"
+                className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center space-x-2"
               >
                 <FiShare2 className="w-4 h-4" />
                 <span>Share</span>
@@ -1238,13 +1100,13 @@ export default function Dashboard() {
               }`}>
                 {faceRegistered ? (
                   <>
-                    <FiShield className="w-5 h-5" />
-                    <span className="font-semibold">Face Security Active</span>
+                    <FiUserCheck className="w-5 h-5" />
+                    <span className="font-semibold">Face Verified</span>
                   </>
                 ) : (
                   <>
                     <FiAlertTriangle className="w-5 h-5" />
-                    <span className="font-semibold">Face Security Required</span>
+                    <span className="font-semibold">Face Not Registered</span>
                   </>
                 )}
               </div>
@@ -1305,8 +1167,8 @@ export default function Dashboard() {
             <div className="bg-gradient-to-r from-indigo-500 to-violet-600 rounded-xl shadow-lg p-6 text-white">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-indigo-100">Security Level</p>
-                  <p className="text-3xl font-bold mt-2">{faceRegistered ? 'HIGH' : 'MEDIUM'}</p>
+                  <p className="text-indigo-100">Face Security</p>
+                  <p className="text-3xl font-bold mt-2">{faceRegistered ? 'ON' : 'OFF'}</p>
                 </div>
                 <FiShield className="w-10 h-10 opacity-80" />
               </div>
@@ -1318,9 +1180,9 @@ export default function Dashboard() {
         <div className="mb-8 bg-gradient-to-r from-gray-900 to-gray-800 rounded-2xl shadow-2xl p-6 text-white">
           <div className="flex flex-col md:flex-row md:items-center justify-between mb-6">
             <div>
-              <h2 className="text-2xl font-bold mb-2">Biometric Security System</h2>
+              <h2 className="text-2xl font-bold mb-2">Face Verification Security</h2>
               <p className="text-gray-300">
-                All sensitive operations require face verification for maximum security
+                Protect your backups with biometric authentication
               </p>
             </div>
             <div className="flex space-x-3 mt-4 md:mt-0">
@@ -1365,7 +1227,7 @@ export default function Dashboard() {
                 className="px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg hover:from-purple-600 hover:to-pink-600 font-semibold flex items-center space-x-2"
               >
                 <FiExternalLink className="w-5 h-5" />
-                <span>Security Console</span>
+                <span>Verification Console</span>
               </button>
             </div>
           </div>
@@ -1376,10 +1238,10 @@ export default function Dashboard() {
                 <div className="p-2 bg-blue-500 bg-opacity-20 rounded-lg">
                   <FiLock className="w-6 h-6 text-blue-400" />
                 </div>
-                <h3 className="font-semibold">Protected Downloads</h3>
+                <h3 className="font-semibold">Secure Downloads</h3>
               </div>
               <p className="text-gray-400 text-sm">
-                All sensitive downloads (backups, logs, certificates) require face verification.
+                All backup downloads require face verification to ensure only authorized access.
               </p>
             </div>
             
@@ -1388,10 +1250,10 @@ export default function Dashboard() {
                 <div className="p-2 bg-green-500 bg-opacity-20 rounded-lg">
                   <FiShield className="w-6 h-6 text-green-400" />
                 </div>
-                <h3 className="font-semibold">Real-time Authentication</h3>
+                <h3 className="font-semibold">Biometric Protection</h3>
               </div>
               <p className="text-gray-400 text-sm">
-                Live face detection prevents unauthorized access and ensures user presence.
+                Your face is your password. No one else can access your backups.
               </p>
             </div>
             
@@ -1400,10 +1262,10 @@ export default function Dashboard() {
                 <div className="p-2 bg-purple-500 bg-opacity-20 rounded-lg">
                   <FiDatabase className="w-6 h-6 text-purple-400" />
                 </div>
-                <h3 className="font-semibold">Complete Audit Trail</h3>
+                <h3 className="font-semibold">Audit Trail</h3>
               </div>
               <p className="text-gray-400 text-sm">
-                Every verification attempt is logged with timestamp and action details.
+                Every verification attempt is logged for security monitoring.
               </p>
             </div>
           </div>
@@ -1505,10 +1367,10 @@ export default function Dashboard() {
                           </div>
                         )}
                         <div className="flex items-center justify-between text-sm">
-                          <span className="text-gray-600">Security:</span>
+                          <span className="text-gray-600">Access:</span>
                           <span className="font-medium flex items-center">
-                            <FiShield className="w-3 h-3 mr-1" />
-                            Face Verification Required
+                            <FiUsers className="w-3 h-3 mr-1" />
+                            {session.access?.length || 1}
                           </span>
                         </div>
                       </div>
@@ -1525,7 +1387,7 @@ export default function Dashboard() {
                           <span>Details</span>
                         </button>
                         <button
-                          onClick={() => verifyFaceForDownload('viewLogs', { sessionId: session.sessionId })}
+                          onClick={() => viewLogs(session.sessionId)}
                           className="flex-1 px-3 py-2 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 transition-colors text-sm flex items-center justify-center space-x-1"
                         >
                           <FiEye className="w-3 h-3" />
@@ -1533,10 +1395,10 @@ export default function Dashboard() {
                         </button>
                         {session.status === 'completed' && (
                           <button
-                            onClick={() => verifyFaceForDownload('certificate', { sessionId: session.sessionId })}
+                            onClick={() => downloadCertificate(session.sessionId)}
                             className="flex-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm flex items-center justify-center space-x-1"
                           >
-                            <FiFileText className="w-3 h-3" />
+                            <FiDownload className="w-3 h-3" />
                             <span>Cert</span>
                           </button>
                         )}
@@ -1589,8 +1451,8 @@ export default function Dashboard() {
                             {backup.backupUrls?.length || 0} file(s)
                           </div>
                           <div className="text-xs text-gray-500 flex items-center">
-                            <FiShield className="w-2 h-2 mr-1" />
-                            Face Verify Required
+                            <FiUsers className="w-2 h-2 mr-1" />
+                            Access: {backup.access?.length || 1}
                           </div>
                         </div>
                       </div>
@@ -1607,7 +1469,7 @@ export default function Dashboard() {
                                   <span className="text-sm font-mono truncate max-w-xs">{fileName}</span>
                                 </div>
                                 <button
-                                  onClick={() => verifyFaceForDownload('backup', { url, name: fileName })}
+                                  onClick={() => verifyFaceForDownload(url, fileName)}
                                   className="px-3 py-1 bg-gradient-to-r from-green-500 to-teal-500 text-white rounded-lg hover:from-green-600 hover:to-teal-600 text-sm flex items-center space-x-1"
                                 >
                                   <FiDownload className="w-3 h-3" />
@@ -1710,7 +1572,7 @@ export default function Dashboard() {
                   <span className="text-sm">Download Protection</span>
                 </div>
                 <span className="text-sm font-medium bg-blue-100 text-blue-800 px-2 py-1 rounded">
-                  Active for All Downloads
+                  {faceRegistered ? 'Face Locked' : 'Disabled'}
                 </span>
               </div>
               
@@ -1720,33 +1582,30 @@ export default function Dashboard() {
                   <span className="text-sm">Audit Logging</span>
                 </div>
                 <span className="text-sm font-medium bg-green-100 text-green-800 px-2 py-1 rounded">
-                  All Actions Logged
+                  Active
                 </span>
               </div>
             </div>
           </div>
           
           <div className="bg-white rounded-xl shadow p-6">
-            <h3 className="font-semibold text-gray-900 mb-4">Protected Downloads</h3>
+            <h3 className="font-semibold text-gray-900 mb-4">Storage Info</h3>
             <div className="space-y-2">
-              <div className="flex items-center space-x-2 text-sm">
-                <FiFileText className="w-4 h-4 text-blue-500" />
-                <span className="text-gray-600">Backup Files:</span>
-                <span className="font-medium ml-auto">Face Verify Required</span>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Sessions:</span>
+                <span className="font-medium">{sessions.length}</span>
               </div>
-              <div className="flex items-center space-x-2 text-sm">
-                <FiFile className="w-4 h-4 text-green-500" />
-                <span className="text-gray-600">Logs:</span>
-                <span className="font-medium ml-auto">Face Verify Required</span>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Backups:</span>
+                <span className="font-medium">{backups.length}</span>
               </div>
-              <div className="flex items-center space-x-2 text-sm">
-                <FiCheck className="w-4 h-4 text-purple-500" />
-                <span className="text-gray-600">Certificates:</span>
-                <span className="font-medium ml-auto">Face Verify Required</span>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Total Files:</span>
+                <span className="font-medium">{stats.totalBackupFiles + stats.totalFilesWiped}</span>
               </div>
               <div className="pt-2 border-t">
                 <div className="text-xs text-gray-500">
-                  All sensitive downloads protected with biometric authentication
+                  Data stored in AWS S3 with AES-256 encryption
                 </div>
               </div>
             </div>
@@ -1761,12 +1620,12 @@ export default function Dashboard() {
             </p>
             <p className="text-xs text-gray-500 mt-2 max-w-2xl mx-auto">
               This dashboard shows all your wipe sessions and backup files.
-              All sensitive downloads are protected with face verification for maximum security.
+              All backup downloads are protected with face verification for enhanced security.
             </p>
             <div className="flex justify-center space-x-6 mt-4">
               <span className="text-xs text-gray-500 flex items-center">
                 <FiShield className="w-3 h-3 mr-1" />
-                Biometric Authentication
+                Face Verification
               </span>
               <span className="text-xs text-gray-500 flex items-center">
                 <FiLock className="w-3 h-3 mr-1" />
@@ -1774,9 +1633,9 @@ export default function Dashboard() {
               </span>
               <span className="text-xs text-gray-500 flex items-center">
                 <FiDatabase className="w-3 h-3 mr-1" />
-                Secure Downloads
+                Secure Backups
               </span>
-              <span className="text-xs text-gray500 flex items-center">
+              <span className="text-xs text-gray-500 flex items-center">
                 <FiGlobe className="w-3 h-3 mr-1" />
                 Cloud Storage
               </span>
