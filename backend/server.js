@@ -7,7 +7,11 @@ const PDFDocument = require('pdfkit');
 const winston = require('winston');
 const os = require('os');
 const s3Service = require('./s3-service');
-const multer = require('multer')
+const multer = require('multer');
+const { connectDB } = require('./db');
+const UserSession = require('./models/UserSession');
+const UserBackup = require('./models/UserBackup');
+const memoryStore = require('./memory-store');
 
 require('dotenv').config();
 
@@ -57,10 +61,21 @@ app.use(cors({
   maxAge: 86400 // 24 hours
 }));
 
-// Add OPTIONS handler for preflight requests
-app.options('*', cors()); // Enable pre-flight for all routes
+connectDB();
+
+app.options('*', cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+const upload = multer({
+  dest: 'uploads/',
+  limits: {
+    fileSize: 1024 * 1024 * 100, // 100MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    cb(null, true);
+  }
+});
 
 // Store wipe sessions
 const wipeSessions = new Map();
@@ -77,17 +92,6 @@ const WIPE_PATTERNS = [
   Buffer.from([0x24, 0x92, 0x49]),
 ];
 
-const upload = multer({
-  dest: 'uploads/', // Temporary directory for file uploads
-  limits: {
-    fileSize: 1024 * 1024 * 100, // 100MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    // Accept all files
-    cb(null, true);
-  }
-});
-
 function formatBytes(bytes, decimals = 2) {
   if (bytes === 0) return '0 Bytes';
   
@@ -97,7 +101,7 @@ function formatBytes(bytes, decimals = 2) {
   
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  return parseFloat((bytes /  Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
 async function saveSessionToFile(sessionId, session) {
@@ -220,16 +224,28 @@ async function validatePathExists(fullPath) {
 
 async function secureWipeFile(filePath, passes = 7) {
   try {
+    console.log(`🔍 Starting wipe for file: ${filePath}`);
+    
     const stats = await fs.stat(filePath);
     const fileSize = stats.size;
+    console.log(`📊 File size: ${fileSize} bytes`);
+    
+    // Check file permissions
+    await fs.access(filePath, fs.constants.W_OK);
+    console.log(`✅ File is writable`);
     
     const fd = await fs.open(filePath, 'r+');
+    console.log(`📝 File opened for writing`);
     
     const effectivePasses = Math.min(passes, WIPE_PATTERNS.length);
+    console.log(`🔄 Performing ${effectivePasses} wipe passes`);
+    
     for (let pass = 0; pass < effectivePasses; pass++) {
       const pattern = WIPE_PATTERNS[pass];
       const bufferSize = 64 * 1024;
       let bytesWritten = 0;
+      
+      console.log(`   Pass ${pass + 1}: Writing pattern`);
       
       while (bytesWritten < fileSize) {
         const remaining = fileSize - bytesWritten;
@@ -245,10 +261,14 @@ async function secureWipeFile(filePath, passes = 7) {
       }
       
       await fs.fsync(fd);
+      console.log(`   ✓ Pass ${pass + 1} completed`);
     }
     
     await fs.close(fd);
+    console.log(`✅ Wiping complete, deleting file`);
+    
     await fs.unlink(filePath);
+    console.log(`✅ File deleted: ${filePath}`);
     
     return {
       success: true,
@@ -256,7 +276,16 @@ async function secureWipeFile(filePath, passes = 7) {
       passes: effectivePasses
     };
   } catch (error) {
-    logger.error(`Error wiping file ${filePath}:`, error);
+    console.error(`❌ Error wiping file ${filePath}:`, error);
+    console.error(`❌ Error stack:`, error.stack);
+    
+    // Try to close file descriptor if it's open
+    try {
+      if (fd) await fs.close(fd);
+    } catch (closeError) {
+      console.error('Could not close file descriptor:', closeError);
+    }
+    
     throw error;
   }
 }
@@ -381,6 +410,32 @@ function updateWipeSession(sessionId, updates) {
     
     if (updates.progress !== undefined && updates.progress % 25 === 0) {
       logger.info(`Session ${sessionId}: Progress ${updates.progress}% - ${session.filesWiped || 0} files, ${session.directoriesWiped || 0} directories`);
+    }
+
+    if (updates.status === 'completed') {
+      setTimeout(async () => {
+        try {
+          // Get username from session (you need to store this when creating session)
+          const username = session.username || 'default-user';
+          
+          // Generate URLs
+          const baseUrl = `http://localhost:${PORT}`;
+          const certificateUrl = `${baseUrl}/api/wipe/certificate/${sessionId}`;
+          const logsUrl = `${baseUrl}/api/wipe/logs/${sessionId}`;
+          
+          // Save to user sessions
+          await axios.post(`${baseUrl}/api/user/session/save`, {
+            username,
+            sessionId,
+            certificate: certificateUrl,
+            logs: logsUrl
+          });
+          
+          console.log(`✅ Session ${sessionId} saved to user dashboard`);
+        } catch (error) {
+          console.error('❌ Failed to save session to dashboard:', error.message);
+        }
+      }, 1000);
     }
     
     return session;
@@ -1801,6 +1856,458 @@ app.get('/api/test/file/:filePath', async (req, res) => {
     });
   }
 });
+
+app.get('/api/user/sessions', async (req, res) => {
+  try {
+    const { username } = req.query;
+    
+    if (!username) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Username is required' 
+      });
+    }
+
+    console.log(`📋 Fetching sessions for user: ${username}`);
+    
+    let sessions = [];
+    let source = 'memory';
+
+    try {
+      // Try to get from MongoDB
+      sessions = await UserSession.find({ username: username }).sort({ createdAt: -1 });
+      source = 'mongodb';
+      console.log(`✅ Got ${sessions.length} sessions from MongoDB`);
+    } catch (mongoError) {
+      console.error('❌ MongoDB query failed:', mongoError.message);
+      // Fallback to memory store
+      sessions = await memoryStore.getUserSessions(username);
+      source = 'memory-fallback';
+      console.log(`🔄 Using memory store: ${sessions.length} sessions`);
+    }
+
+    // Get wipe session details for each session
+    const detailedSessions = await Promise.all(
+      sessions.map(async (session) => {
+        try {
+          const sessionObj = session.toObject ? session.toObject() : session;
+          
+          // Try to get wipe session details
+          if (wipeSessions.has(sessionObj.sessionId)) {
+            const wipeSession = wipeSessions.get(sessionObj.sessionId);
+            return {
+              ...sessionObj,
+              filesWiped: wipeSession.filesWiped || 0,
+              directoriesWiped: wipeSession.directoriesWiped || 0,
+              totalSize: wipeSession.totalSize || 0,
+              status: wipeSession.status || 'unknown',
+              startTime: wipeSession.startTime,
+              endTime: wipeSession.endTime,
+              settings: wipeSession.settings || {}
+            };
+          }
+          
+          return sessionObj;
+        } catch (error) {
+          console.error(`Error getting details for session ${session.sessionId}:`, error.message);
+          return session.toObject ? session.toObject() : session;
+        }
+      })
+    );
+
+    res.json({
+      success: true,
+      sessions: detailedSessions,
+      count: detailedSessions.length,
+      source
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching user sessions:', error.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch user sessions',
+      details: error.message 
+    });
+  }
+});
+
+// Get user backups
+app.get('/api/user/backups', async (req, res) => {
+  try {
+    const { username } = req.query;
+    
+    if (!username) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Username is required' 
+      });
+    }
+
+    console.log(`📋 Fetching backups for user: ${username}`);
+    
+    let backups = [];
+    let source = 'memory';
+
+    try {
+      // Try to get from MongoDB
+      backups = await UserBackup.find({
+        $or: [
+          { username: username },
+          { access: username }
+        ]
+      }).sort({ createdAt: -1 });
+      source = 'mongodb';
+      console.log(`✅ Got ${backups.length} backups from MongoDB`);
+    } catch (mongoError) {
+      console.error('❌ MongoDB query failed:', mongoError.message);
+      // Fallback to memory store
+      backups = await memoryStore.getUserBackups(username);
+      source = 'memory-fallback';
+      console.log(`🔄 Using memory store: ${backups.length} backups`);
+    }
+
+    const plainBackups = backups.map(backup => 
+      backup.toObject ? backup.toObject() : backup
+    );
+
+    res.json({
+      success: true,
+      backups: plainBackups,
+      count: plainBackups.length,
+      source
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching user backups:', error.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch user backups',
+      details: error.message 
+    });
+  }
+});
+
+// Save user session
+app.post('/api/user/session/save', async (req, res) => {
+  try {
+    const { username, sessionId, certificate = '', logs = '' } = req.body;
+
+    if (!username || !sessionId) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Username and sessionId are required' 
+      });
+    }
+
+    console.log(`💾 Saving session: ${sessionId} for user: ${username}`);
+
+    const sessionData = {
+      username,
+      sessionId,
+      certificate,
+      logs
+    };
+
+    let savedSession;
+    let source = 'memory';
+
+    try {
+      // Try to save to MongoDB
+      savedSession = await UserSession.findOneAndUpdate(
+        { sessionId },
+        sessionData,
+        { 
+          upsert: true, 
+          new: true,
+          setDefaultsOnInsert: true 
+        }
+      );
+      source = 'mongodb';
+      console.log(`✅ Session saved to MongoDB: ${sessionId}`);
+    } catch (mongoError) {
+      console.error('❌ MongoDB save failed:', mongoError.message);
+      // Fallback to memory store
+      savedSession = await memoryStore.saveUserSession(sessionData);
+      source = 'memory-fallback';
+      console.log(`🔄 Session saved to memory: ${sessionId}`);
+    }
+
+    res.json({
+      success: true,
+      session: savedSession,
+      source
+    });
+
+  } catch (error) {
+    console.error('❌ Error saving user session:', error.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to save session' 
+    });
+  }
+});
+
+// Save user backup
+app.post('/api/user/backup/save', async (req, res) => {
+  try {
+    const { username, sessionId, backupUrls = [], access = [] } = req.body;
+
+    if (!username || !sessionId) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Username and sessionId are required' 
+      });
+    }
+
+    console.log(`💾 Saving backup for session: ${sessionId}`);
+
+    const backupData = {
+      username,
+      sessionId,
+      backupUrls,
+      access: [...new Set([username, ...access])]
+    };
+
+    let savedBackup;
+    let source = 'memory';
+
+    try {
+      // Try to save to MongoDB
+      savedBackup = await UserBackup.findOneAndUpdate(
+        { sessionId },
+        backupData,
+        { 
+          upsert: true, 
+          new: true,
+          setDefaultsOnInsert: true 
+        }
+      );
+      source = 'mongodb';
+      console.log(`✅ Backup saved to MongoDB: ${sessionId}`);
+    } catch (mongoError) {
+      console.error('❌ MongoDB save failed:', mongoError.message);
+      // Fallback to memory store
+      savedBackup = await memoryStore.saveUserBackup(backupData);
+      source = 'memory-fallback';
+      console.log(`🔄 Backup saved to memory: ${sessionId}`);
+    }
+
+    res.json({
+      success: true,
+      backup: savedBackup,
+      source
+    });
+
+  } catch (error) {
+    console.error('❌ Error saving user backup:', error.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to save backup' 
+    });
+  }
+});
+
+// Share session with other users
+app.post('/api/user/session/:sessionId/share', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { username, usersToShare } = req.body;
+
+    if (!username || !usersToShare || !Array.isArray(usersToShare)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Username and usersToShare array are required' 
+      });
+    }
+
+    console.log(`🤝 Sharing session ${sessionId} with ${usersToShare.length} users`);
+
+    let result;
+    let source = 'memory';
+
+    try {
+      // Try to update in MongoDB
+      const userBackup = await UserBackup.findOne({
+        sessionId,
+        username: username
+      });
+
+      if (!userBackup) {
+        return res.status(403).json({ 
+          success: false,
+          error: 'You do not own this session' 
+        });
+      }
+
+      const newAccess = [...new Set([...userBackup.access, ...usersToShare])];
+      userBackup.access = newAccess;
+      await userBackup.save();
+
+      result = {
+        success: true,
+        message: `Session shared with ${usersToShare.length} user(s)`,
+        sessionId,
+        access: userBackup.access
+      };
+      source = 'mongodb';
+    } catch (mongoError) {
+      console.error('❌ MongoDB share failed:', mongoError.message);
+      // Fallback to memory store
+      const memoryResult = await memoryStore.shareSession(sessionId, username, usersToShare);
+      
+      if (!memoryResult) {
+        return res.status(403).json({ 
+          success: false,
+          error: 'You do not own this session' 
+        });
+      }
+
+      result = {
+        success: true,
+        message: `Session shared with ${usersToShare.length} user(s)`,
+        sessionId,
+        access: memoryResult.access
+      };
+      source = 'memory-fallback';
+    }
+
+    res.json({
+      ...result,
+      source
+    });
+
+  } catch (error) {
+    console.error('❌ Error sharing session:', error.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to share session' 
+    });
+  }
+});
+
+// Add these simple endpoints to your server.js
+// Remove all the complex code and just add these:
+
+// SIMPLE: Get user sessions
+app.get('/api/user/sessions-simple', async (req, res) => {
+  try {
+    const { username } = req.query;
+    
+    if (!username) {
+      return res.status(400).json({ 
+        error: 'Username is required' 
+      });
+    }
+
+    console.log(`📋 Fetching sessions for: ${username}`);
+    
+    // Direct MongoDB query - no fallbacks, no complexity
+    const sessions = await UserSession.find({ username: username })
+      .sort({ createdAt: -1 })
+      .lean(); // Convert to plain objects
+    
+    console.log(`✅ Found ${sessions.length} sessions`);
+    
+    res.json({
+      success: true,
+      sessions: sessions,
+      count: sessions.length
+    });
+
+  } catch (error) {
+    console.error('❌ Error:', error.message);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+// SIMPLE: Get user backups
+app.get('/api/user/backups-simple', async (req, res) => {
+  try {
+    const { username } = req.query;
+    
+    if (!username) {
+      return res.status(400).json({ 
+        error: 'Username is required' 
+      });
+    }
+
+    console.log(`📋 Fetching backups for: ${username}`);
+    
+    // Direct MongoDB query
+    const backups = await UserBackup.find({
+      $or: [
+        { username: username },
+        { access: username }
+      ]
+    })
+    .sort({ createdAt: -1 })
+    .lean();
+    
+    console.log(`✅ Found ${backups.length} backups`);
+    
+    res.json({
+      success: true,
+      backups: backups,
+      count: backups.length
+    });
+
+  } catch (error) {
+    console.error('❌ Error:', error.message);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+// Test endpoint to verify data exists
+app.get('/api/user/test-data', async (req, res) => {
+  try {
+    const { username } = req.query;
+    
+    if (!username) {
+      return res.status(400).json({ 
+        error: 'Username is required' 
+      });
+    }
+    
+    // Check if user has any data
+    const sessionCount = await UserSession.countDocuments({ username: username });
+    const backupCount = await UserBackup.countDocuments({ 
+      $or: [
+        { username: username },
+        { access: username }
+      ]
+    });
+    
+    // Get one sample document
+    const sampleSession = await UserSession.findOne({ username: username }).lean();
+    const sampleBackup = await UserBackup.findOne({ 
+      $or: [
+        { username: username },
+        { access: username }
+      ]
+    }).lean();
+    
+    res.json({
+      success: true,
+      username,
+      sessionCount,
+      backupCount,
+      sampleSession,
+      sampleBackup,
+      message: sampleSession || sampleBackup ? 'Data found' : 'No data found for user'
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {

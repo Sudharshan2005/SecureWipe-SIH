@@ -1,40 +1,41 @@
 'use client';
 
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { useEffect, useRef, useState } from 'react';
-import {
-    FiActivity,
-    FiAlertCircle,
-    FiAlertTriangle,
-    FiArchive,
-    FiCheck,
-    FiChevronDown,
-    FiChevronUp,
-    FiClock,
-    FiCloud,
-    FiDownload,
-    FiEye,
-    FiEyeOff,
-    FiFile,
-    FiFolder,
-    FiHardDrive,
-    FiInfo,
-    FiList,
-    FiPlus,
-    FiRefreshCw,
-    FiSearch,
-    FiTrash2,
-    FiUpload,
-    FiX
-} from 'react-icons/fi';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+import {
+  FiFolder,
+  FiFile,
+  FiDownload,
+  FiTrash2,
+  FiRefreshCw,
+  FiCheck,
+  FiAlertCircle,
+  FiHardDrive,
+  FiClock,
+  FiActivity,
+  FiUpload,
+  FiX,
+  FiChevronDown,
+  FiChevronUp,
+  FiAlertTriangle,
+  FiInfo,
+  FiExternalLink,
+  FiPlus,
+  FiSearch,
+  FiEye,
+  FiEyeOff,
+  FiArchive,
+  FiList,
+  FiCloud
+} from 'react-icons/fi';
 import S3UploadModal from '../../components/S3UploadModal.js';
+import { useSessionManager } from '../../hooks/useSessionManager';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:6000';
 
 // File Browser Modal Component
-// File Browser Modal Component - UPDATED VERSION
 const FileBrowserModal = ({ 
   isOpen, 
   onClose, 
@@ -52,10 +53,8 @@ const FileBrowserModal = ({
 
   const handleItemClick = (item) => {
     if (item.type === 'directory') {
-      // Navigate into the directory
       onNavigate(item.path);
     } else {
-      // Toggle file selection
       setSelectedItems(prev => {
         if (prev.some(i => i.path === item.path)) {
           return prev.filter(i => i.path !== item.path);
@@ -85,7 +84,6 @@ const FileBrowserModal = ({
     }
   };
 
-  // Get breadcrumb path segments
   const getBreadcrumbs = () => {
     const segments = currentPath ? currentPath.split('/').filter(s => s) : [];
     return segments;
@@ -108,7 +106,6 @@ const FileBrowserModal = ({
             </button>
           </div>
           
-          {/* Breadcrumb Navigation */}
           <div className="flex items-center gap-2 text-sm">
             <button
               onClick={() => onNavigate('')}
@@ -438,45 +435,38 @@ const ConfirmationDialog = ({
             </div>
           </div>
 
-          // In your ConfirmationDialog component, add this section after the warning section:
-
-{/* S3 Backup Option */}
-<div className="mb-6">
-  <div className="flex items-center justify-between mb-3">
-    <h3 className="font-semibold text-gray-900 flex items-center">
-      <FiCloud className="w-5 h-5 mr-2 text-blue-600" />
-      Cloud Backup Option
-    </h3>
-    <button
-      onClick={() => {
-        console.log('[ConfirmationDialog] Backup button clicked');
-        console.log('[ConfirmationDialog] items:', items);
-        console.log('[ConfirmationDialog] items length:', items?.length);
-        // This will be handled by parent component
-        if (onBackupRequest) {
-          onBackupRequest(items);
-        }
-      }}
-      className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white rounded-lg hover:from-blue-600 hover:to-purple-600 flex items-center space-x-2 text-sm"
-    >
-      <FiUpload className="w-4 h-4" />
-      <span>Backup Important Files</span>
-    </button>
-  </div>
-  
-  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-    <p className="text-sm text-blue-800">
-      <span className="font-semibold">Optional:</span> Upload important files to AWS S3 before wiping.
-      Files can be password-encrypted and downloaded anytime.
-    </p>
-    <ul className="text-xs text-blue-700 mt-2 space-y-1">
-      <li>• AES-256 encryption for password-protected files</li>
-      <li>• Secure AWS S3 cloud storage</li>
-      <li>• Time-limited download links</li>
-      <li>• No additional cost for storage during wipe process</li>
-    </ul>
-  </div>
-</div>
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-gray-900 flex items-center">
+                <FiCloud className="w-5 h-5 mr-2 text-blue-600" />
+                Cloud Backup Option
+              </h3>
+              <button
+                onClick={() => {
+                  if (onBackupRequest) {
+                    onBackupRequest(items);
+                  }
+                }}
+                className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white rounded-lg hover:from-blue-600 hover:to-purple-600 flex items-center space-x-2 text-sm"
+              >
+                <FiUpload className="w-4 h-4" />
+                <span>Backup Important Files</span>
+              </button>
+            </div>
+            
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <p className="text-sm text-blue-800">
+                <span className="font-semibold">Optional:</span> Upload important files to AWS S3 before wiping.
+                Files can be password-encrypted and downloaded anytime.
+              </p>
+              <ul className="text-xs text-blue-700 mt-2 space-y-1">
+                <li>• AES-256 encryption for password-protected files</li>
+                <li>• Secure AWS S3 cloud storage</li>
+                <li>• Time-limited download links</li>
+                <li>• No additional cost for storage during wipe process</li>
+              </ul>
+            </div>
+          </div>
         </div>
 
         <div className="border-t border-gray-200 p-6 bg-gray-50">
@@ -554,9 +544,18 @@ const LogsModal = ({ isOpen, onClose, content, sessionId, onDownload }) => {
 };
 
 export default function Home() {
+  // Session Management
+  const { 
+    sessionId, 
+    sessionData, 
+    createNewSession, 
+    updateSession, 
+    clearSession 
+  } = useSessionManager();
+
+  // State
   const [paths, setPaths] = useState([]);
   const [selectedPlatform, setSelectedPlatform] = useState('windows');
-  const [currentSession, setCurrentSession] = useState(null);
   const [isWiping, setIsWiping] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [statusInterval, setStatusInterval] = useState(null);
@@ -575,46 +574,49 @@ export default function Home() {
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const [wipeStatus, setWipeStatus] = useState(null);
   const [wipeProgress, setWipeProgress] = useState(0);
-  const [sessionDetails, setSessionDetails] = useState(null);
   const [allSessions, setAllSessions] = useState([]);
   const [showSessionsList, setShowSessionsList] = useState(false);
   const [currentBrowserPath, setCurrentBrowserPath] = useState('');
   const [browserFiles, setBrowserFiles] = useState([]);
   const [loadingBrowser, setLoadingBrowser] = useState(false);
   const [showS3UploadModal, setShowS3UploadModal] = useState(false);
-const [filesForBackup, setFilesForBackup] = useState([]);
-
-
-
-const handleBackupRequest = (items) => {
-  console.log('[WipePage] handleBackupRequest called with items:', items);
-  console.log('[WipePage] items length:', items?.length);
-  console.log('[WipePage] items type:', typeof items, Array.isArray(items));
-  
-  // Set files first, then open modal in next render cycle
-  setFilesForBackup(items);
-  
-  // Use setTimeout to ensure state updates before opening modal
-  setTimeout(() => {
-    console.log('[WipePage] Opening S3 upload modal');
-    setShowS3UploadModal(true);
-  }, 0);
-};
-
-// Add this function for upload completion
-const handleUploadComplete = (result) => {
-  toast.success(`${result.uploaded} file(s) backed up to AWS S3`, {
-    autoClose: 5000,
-  });
-};
+  const [filesForBackup, setFilesForBackup] = useState([]);
 
   const statusIntervalRef = useRef(null);
   const statusPollingRef = useRef(false);
 
-  // Load available files on mount
+  // Initialize session on page load
   useEffect(() => {
     loadAvailableFiles();
     loadAllSessions();
+    
+    // Check if we have an existing session
+    if (sessionId) {
+      axios.get(`${API_BASE_URL}/api/wipe/status/${sessionId}`)
+        .then(response => {
+          if (response.data) {
+            const session = response.data;
+            updateSession(session);
+            
+            if (session.status === 'in-progress') {
+              setIsWiping(true);
+              setWipeStatus('in-progress');
+              setWipeProgress(session.progress || 0);
+              startStatusPolling(sessionId);
+            } else if (session.status === 'completed') {
+              setWipeStatus('completed');
+              setWipeProgress(100);
+            } else if (session.status === 'failed') {
+              setWipeStatus('failed');
+              setWipeProgress(100);
+            }
+          }
+        })
+        .catch(error => {
+          console.log('Existing session not found on server, clearing local session');
+          clearSession();
+        });
+    }
   }, []);
 
   // Cleanup on unmount
@@ -643,13 +645,10 @@ const handleUploadComplete = (result) => {
     }
   };
 
-
-  // Navigate to path in browser
   const navigateInBrowser = (path) => {
     loadBrowserFiles(path);
   };
 
-  // Navigate up in browser
   const navigateUpInBrowser = () => {
     if (currentBrowserPath) {
       const parentPath = currentBrowserPath.split('/').slice(0, -1).join('/');
@@ -659,7 +658,6 @@ const handleUploadComplete = (result) => {
     }
   };
 
-  // Load available files
   const loadAvailableFiles = async () => {
     try {
       setLoadingFiles(true);
@@ -673,7 +671,6 @@ const handleUploadComplete = (result) => {
     }
   };
 
-  // Load all sessions
   const loadAllSessions = async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/wipe/sessions`);
@@ -683,53 +680,32 @@ const handleUploadComplete = (result) => {
     }
   };
 
-  // Open file browser
   const openFileBrowser = () => {
     setCurrentBrowserPath('');
     loadBrowserFiles();
     setShowFileBrowser(true);
   };
 
-  // Handle file selection
   const handleFileSelection = (selectedItems) => {
-  console.log('[WipePage] handleFileSelection called with:', selectedItems);
-  console.log('[WipePage] Current paths before adding:', paths);
-  
-  const newPaths = [...paths];
-  let addedCount = 0;
-  
-  selectedItems.forEach(item => {
-    console.log('[WipePage] Processing item:', item);
+    const newPaths = [...paths];
     
-    // Add both files and directories
-    if (!newPaths.some(p => p.path === item.path)) {
-      const newItem = {
-        id: Date.now() + Math.random(),
-        path: item.path, // This is already the correct relative path
-        type: item.type || 'file',
-        name: item.name
-      };
-      newPaths.push(newItem);
-      addedCount++;
-      console.log('[WipePage] Added item:', newItem);
-    } else {
-      console.log('[WipePage] Item already exists in paths:', item.path);
-    }
-  });
-  
-  console.log('[WipePage] New paths after adding:', newPaths);
-  console.log('[WipePage] Added count:', addedCount);
-  
-  setPaths(newPaths);
-  
-  if (addedCount > 0) {
-    toast.success(`Added ${addedCount} item(s) to wipe list`);
-  } else {
-    toast.info('Items already in list');
-  }
-};
+    selectedItems.forEach(item => {
+      if (item.type === 'file') {
+        if (!newPaths.some(p => p.path === item.path)) {
+          newPaths.push({
+            id: Date.now() + Math.random(),
+            path: item.path,
+            type: 'file',
+            name: item.name
+          });
+        }
+      }
+    });
+    
+    setPaths(newPaths);
+    toast.success(`Added ${selectedItems.length} file(s) to wipe list`);
+  };
 
-  // Manual path input
   const addManualPath = () => {
     const type = confirm('Add a folder? (Cancel for file)') ? 'directory' : 'file';
     const name = prompt(`Enter ${type} name:`);
@@ -746,7 +722,6 @@ const handleUploadComplete = (result) => {
     }
   };
 
-  // Remove path
   const removePath = (id) => {
     const newPaths = paths.filter(p => p.id !== id);
     setPaths(newPaths);
@@ -755,26 +730,22 @@ const handleUploadComplete = (result) => {
     }
   };
 
-  // Clear all paths
-  // Clear all paths - UPDATED
-const clearAllPaths = () => {
-  if (paths.length > 0 && confirm('Clear all selected items?')) {
-    setPaths([]);
-    setCurrentSession(null); // Ensure session is reset
-    setWipeStatus(null);
-    setWipeProgress(0);
-    setSessionDetails(null);
-    if (statusIntervalRef.current) {
-      clearInterval(statusIntervalRef.current);
-      statusIntervalRef.current = null;
+  const clearAllPaths = () => {
+    if (paths.length > 0 && confirm('Clear all selected items?')) {
+      setPaths([]);
+      clearSession();
+      setWipeStatus(null);
+      setWipeProgress(0);
+      if (statusIntervalRef.current) {
+        clearInterval(statusIntervalRef.current);
+        statusIntervalRef.current = null;
+      }
+      setIsWiping(false);
+      statusPollingRef.current = false;
+      toast.info('Cleared all selections');
     }
-    setIsWiping(false);
-    statusPollingRef.current = false;
-    toast.info('Cleared all selections');
-  }
-};
+  };
 
-  // Download wipe script
   const downloadScript = async () => {
     try {
       setIsLoading(true);
@@ -825,414 +796,406 @@ const clearAllPaths = () => {
     }
   };
 
-  // Start wipe process
   const startWipe = () => {
-  if (paths.length === 0) {
-    toast.error('Please select at least one file or folder');
-    return;
-  }
-
-  console.log('[WipePage] startWipe - paths:', paths);
-  console.log('[WipePage] startWipe - paths length:', paths.length);
-
-  // Generate a sessionId upfront to use consistently
-  const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  setCurrentSession(newSessionId);
-  
-  setShowConfirmation(true);
-};
-
-  // Confirmed wipe process
-  const confirmWipe = async () => {
-  setShowConfirmation(false);
-  setIsWiping(true);
-  setWipeStatus('starting');
-  setWipeProgress(0);
-  
-  try {
-    const validPaths = paths.map(p => p.path);
-    
-    const toastId = toast.loading('Starting secure wipe process...', {
-      position: "top-right",
-      autoClose: false,
-    });
-
-    const response = await axios.post(`${API_BASE_URL}/api/wipe/start`, {
-      paths: validPaths,
-      settings: wipeSettings,
-      sessionId: currentSession // Send the pre-generated sessionId
-    });
-
-    toast.update(toastId, {
-      render: 'Wipe process initiated! Tracking progress...',
-      type: toast.TYPE.INFO,
-      isLoading: false,
-      autoClose: 3000
-    });
-
-    // Use the sessionId from response or keep the pre-generated one
-    const sessionId = response.data.sessionId || currentSession;
-    setCurrentSession(sessionId);
-    setWipeStatus('in-progress');
-
-    // Start polling for status
-    startStatusPolling(sessionId);
-
-    // Reload sessions list
-    loadAllSessions();
-
-  } catch (error) {
-    console.error('Error starting wipe:', error);
-    const errorMsg = error.response?.data?.error || 'Failed to start wipe process';
-    const invalidPaths = error.response?.data?.invalidPaths;
-    
-    if (invalidPaths) {
-      toast.error(`Invalid paths: ${invalidPaths.join(', ')}`);
-    } else {
-      toast.error(errorMsg);
-    }
-    
-    setIsWiping(false);
-    setWipeStatus(null);
-    setWipeProgress(0);
-    setCurrentSession(null); // Reset session on error
-  }
-};
-  // Start status polling - UPDATED VERSION
-const startStatusPolling = (sessionId) => {
-  // Clear any existing interval
-  if (statusIntervalRef.current) {
-    clearInterval(statusIntervalRef.current);
-  }
-  
-  // Set polling state
-  statusPollingRef.current = true;
-  
-  // Initial check with shorter timeout
-  checkWipeStatus(sessionId);
-  
-  // Set up interval for polling (every 1 second for faster updates)
-  const interval = setInterval(() => {
-    if (statusPollingRef.current) {
-      checkWipeStatus(sessionId);
-    } else {
-      clearInterval(interval);
-    }
-  }, 1000); // Changed from 2000ms to 1000ms for faster updates
-  
-  statusIntervalRef.current = interval;
-  setStatusInterval(interval);
-};
-
-  // Check wipe status
-  // In your frontend, update the checkWipeStatus function:
-// Check wipe status - ensure it uses the sessionId parameter
-const checkWipeStatus = async (sessionId) => {
-  if (!statusPollingRef.current || !sessionId) return;
-  
-  try {
-    console.log(`Checking status for session: ${sessionId}`);
-    const response = await axios.get(`${API_BASE_URL}/api/wipe/status/${sessionId}`, {
-      timeout: 5000
-    });
-    const session = response.data;
-    
-    console.log('Session status:', session.status, 'Progress:', session.progress);
-    
-    setSessionDetails(session);
-    
-    if (session.progress !== undefined) {
-      setWipeProgress(session.progress);
-    }
-    
-    if (session.status === 'completed' || session.status === 'failed') {
-      // Stop polling
-      statusPollingRef.current = false;
-      if (statusIntervalRef.current) {
-        clearInterval(statusIntervalRef.current);
-        statusIntervalRef.current = null;
-      }
-      
-      // Update state
-      setWipeStatus(session.status);
-      setIsWiping(false);
-      setWipeProgress(100);
-      
-      // Show completion toast
-      if (session.status === 'completed') {
-        toast.success(`Wipe completed! ${session.filesWiped || 0} files deleted`, {
-          autoClose: 8000,
-        });
-      } else {
-        toast.error(`Wipe failed: ${session.error || 'Unknown error'}`, {
-          autoClose: 8000,
-        });
-      }
-      
-      // Reload sessions list
-      loadAllSessions();
-      
-    } else if (session.status === 'in-progress') {
-      setWipeStatus('in-progress');
-      setWipeProgress(session.progress || 0);
-    }
-    
-  } catch (error) {
-    console.error('Error checking status:', error);
-    
-    // Handle different error types
-    if (error.response?.status === 404) {
-      // Session not found
-      toast.error(`Session not found. It may have expired or been corrupted.`, {
-        autoClose: 5000,
-      });
-    } else if (error.code === 'ECONNABORTED') {
-      // Timeout - continue polling
-      console.log('Status check timeout, will retry...');
+    if (paths.length === 0) {
+      toast.error('Please select at least one file or folder');
       return;
-    } else {
-      // Network or other error
-      console.error('Network error checking status:', error.message);
     }
+
+    // Create session if doesn't exist
+    if (!sessionId) {
+      createNewSession({
+        paths: paths.map(p => p.path),
+        settings: wipeSettings,
+        status: 'pending',
+        filesWiped: 0,
+        directoriesWiped: 0,
+        totalSize: 0
+      });
+    } else {
+      updateSession({
+        paths: paths.map(p => p.path),
+        settings: wipeSettings,
+        status: 'pending'
+      });
+    }
+
+    setShowConfirmation(true);
+  };
+
+  const confirmWipe = async () => {
+    setShowConfirmation(false);
+    setIsWiping(true);
+    setWipeStatus('starting');
+    setWipeProgress(0);
     
-    // Only stop polling on 404 errors
-    if (error.response?.status === 404) {
-      statusPollingRef.current = false;
-      if (statusIntervalRef.current) {
-        clearInterval(statusIntervalRef.current);
-        statusIntervalRef.current = null;
+    try {
+      const validPaths = paths.map(p => p.path);
+      
+      const toastId = toast.loading('Starting secure wipe process...', {
+        position: "top-right",
+        autoClose: false,
+      });
+
+      const response = await axios.post(`${API_BASE_URL}/api/wipe/start`, {
+        paths: validPaths,
+        settings: wipeSettings,
+        sessionId: sessionId
+      });
+
+      toast.update(toastId, {
+        render: 'Wipe process initiated! Tracking progress...',
+        type: toast.TYPE.INFO,
+        isLoading: false,
+        autoClose: 3000
+      });
+
+      setWipeStatus('in-progress');
+      updateSession({ status: 'in-progress' });
+
+      startStatusPolling(sessionId);
+      loadAllSessions();
+
+    } catch (error) {
+      console.error('Error starting wipe:', error);
+      const errorMsg = error.response?.data?.error || 'Failed to start wipe process';
+      const invalidPaths = error.response?.data?.invalidPaths;
+      
+      if (invalidPaths) {
+        toast.error(`Invalid paths: ${invalidPaths.join(', ')}`);
+      } else {
+        toast.error(errorMsg);
       }
+      
       setIsWiping(false);
-      setCurrentSession(null); // Reset session on 404
+      setWipeStatus(null);
+      setWipeProgress(0);
+      updateSession({ status: 'failed', error: errorMsg });
     }
-  }
-};
+  };
 
-  // Manual status check
-  // Manual status check - UPDATED
-const manualStatusCheck = async () => {
-  const sessionIdToUse = currentSession;
-  
-  if (!sessionIdToUse) {
-    toast.error('No active wipe session');
-    return;
-  }
-  
-  try {
-    const toastId = toast.loading('Checking wipe status...', {
-      position: "top-right",
-      autoClose: false,
-    });
-    
-    await checkWipeStatus(sessionIdToUse);
-    
-    toast.update(toastId, {
-      render: 'Status checked',
-      type: toast.TYPE.INFO,
-      isLoading: false,
-      autoClose: 2000,
-    });
-  } catch (error) {
-    toast.error('Failed to check status');
-  }
-};
-
-  // Download certificate
-  // Download certificate - UPDATED
-const downloadCertificate = async () => {
-  const sessionIdToUse = currentSession;
-  
-  if (!sessionIdToUse) {
-    toast.error('No wipe session found');
-    return;
-  }
-
-  if (wipeStatus !== 'completed' && sessionDetails?.status !== 'completed') {
-    toast.error('Wipe process is not completed yet');
-    return;
-  }
-
-  try {
-    const toastId = toast.loading('Generating certificate...', {
-      position: "top-right",
-      autoClose: false,
-    });
-
-    const response = await axios.get(
-      `${API_BASE_URL}/api/wipe/certificate/${sessionIdToUse}`,
-      { responseType: 'blob' }
-    );
-
-    const url = window.URL.createObjectURL(new Blob([response.data]));
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `wipe-certificate-${sessionIdToUse}.pdf`);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-
-    toast.update(toastId, {
-      render: 'Certificate downloaded successfully!',
-      type: toast.TYPE.SUCCESS,
-      isLoading: false,
-      autoClose: 3000
-    });
-
-  } catch (error) {
-    console.error('Error downloading certificate:', error);
-    if (error.response?.status === 400) {
-      toast.error('Wipe process is not completed yet');
-    } else if (error.response?.status === 404) {
-      toast.error('Certificate not found. Session may have expired.');
-    } else {
-      toast.error('Failed to download certificate.');
+  const startStatusPolling = (pollingSessionId) => {
+    if (statusIntervalRef.current) {
+      clearInterval(statusIntervalRef.current);
     }
-  }
-};
-
-  // Download logs
-  // Download logs - UPDATED
-const downloadLogs = async () => {
-  const sessionIdToUse = currentSession;
-  
-  if (!sessionIdToUse) {
-    toast.error('No active wipe session found');
-    return;
-  }
-
-  try {
-    const toastId = toast.loading('Fetching logs...', {
-      position: "top-right",
-      autoClose: false,
-    });
-
-    // First check if session exists
-    try {
-      await axios.get(`${API_BASE_URL}/api/wipe/status/${sessionIdToUse}`);
-    } catch (statusError) {
-      if (statusError.response?.status === 404) {
-        toast.update(toastId, {
-          render: 'Session expired. Retrieving from archive...',
-          type: toast.TYPE.WARNING,
-          isLoading: true,
-        });
+    
+    statusPollingRef.current = true;
+    
+    checkWipeStatus(pollingSessionId);
+    
+    const interval = setInterval(() => {
+      if (statusPollingRef.current) {
+        checkWipeStatus(pollingSessionId);
+      } else {
+        clearInterval(interval);
       }
-    }
-
-    const response = await axios.get(
-      `${API_BASE_URL}/api/wipe/logs/${sessionIdToUse}`,
-      { 
-        responseType: 'blob',
-        timeout: 30000
-      }
-    );
-
-    const url = window.URL.createObjectURL(new Blob([response.data]));
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `wipe-logs-${sessionIdToUse}.txt`);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    }, 1000);
     
-    setTimeout(() => window.URL.revokeObjectURL(url), 100);
+    statusIntervalRef.current = interval;
+    setStatusInterval(interval);
+  };
 
-    toast.update(toastId, {
-      render: 'Logs downloaded successfully!',
-      type: toast.TYPE.SUCCESS,
-      isLoading: false,
-      autoClose: 3000
-    });
-
-  } catch (error) {
-    console.error('Error downloading logs:', error);
+  const checkWipeStatus = async (sessionIdToCheck) => {
+    if (!sessionIdToCheck || !statusPollingRef.current) return;
     
-    let errorMessage = 'Failed to download logs';
-    if (error.response?.status === 404) {
-      errorMessage = 'Session not found. It may have expired or been cleaned up.';
-    } else if (error.code === 'ECONNABORTED') {
-      errorMessage = 'Request timeout. Server may be busy.';
-    } else if (error.response?.data?.error) {
-      errorMessage = error.response.data.error;
-    }
-    
-    toast.error(errorMessage, {
-      autoClose: 5000,
-    });
-  }
-};
-
-  // View logs in modal
-  // View logs in modal - UPDATED
-const viewLogs = async () => {
-  const sessionIdToUse = currentSession;
-  
-  if (!sessionIdToUse) {
-    toast.error('No session selected');
-    return;
-  }
-  
-  try {
-    const toastId = toast.loading('Loading logs...');
-    const response = await axios.get(`${API_BASE_URL}/api/wipe/logs/${sessionIdToUse}`, {
-      responseType: 'text'
-    });
-    setLogsContent(response.data);
-    setShowLogsModal(true);
-    toast.dismiss(toastId);
-  } catch (error) {
-    console.error('Error loading logs:', error);
-    toast.error('Failed to load logs');
-  }
-};
-
-  // Download logs from modal
-  // Download logs from modal - UPDATED
-const downloadLogsFromModal = () => {
-  const sessionIdToUse = currentSession;
-  const blob = new Blob([logsContent], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `wipe-logs-${sessionIdToUse}.txt`;
-  a.click();
-  setShowLogsModal(false);
-};
-
-  // Load session from list
-  const loadSession = async (sessionId) => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/wipe/status/${sessionId}`);
+      const response = await axios.get(`${API_BASE_URL}/api/wipe/status/${sessionIdToCheck}`, {
+        timeout: 5000
+      });
       const session = response.data;
       
-      setCurrentSession(sessionId);
-      setSessionDetails(session);
+      updateSession({
+        status: session.status,
+        progress: session.progress || 0,
+        filesWiped: session.filesWiped,
+        directoriesWiped: session.directoriesWiped,
+        totalSize: session.totalSize,
+        endTime: session.endTime,
+        details: session
+      });
+      
+      if (session.progress !== undefined) {
+        setWipeProgress(session.progress);
+      }
+      
+      if (session.status === 'completed' || session.status === 'failed') {
+        statusPollingRef.current = false;
+        if (statusIntervalRef.current) {
+          clearInterval(statusIntervalRef.current);
+          statusIntervalRef.current = null;
+        }
+        
+        setWipeStatus(session.status);
+        setIsWiping(false);
+        setWipeProgress(100);
+        
+        if (session.status === 'completed') {
+          toast.success(`Wipe completed! ${session.filesWiped || 0} files deleted`, {
+            autoClose: 8000,
+          });
+        } else {
+          toast.error(`Wipe failed: ${session.error || 'Unknown error'}`, {
+            autoClose: 8000,
+          });
+        }
+        
+        loadAllSessions();
+        
+      } else if (session.status === 'in-progress') {
+        setWipeStatus('in-progress');
+        setWipeProgress(session.progress || 0);
+      }
+      
+    } catch (error) {
+      console.error('Error checking status:', error);
+      
+      if (error.response?.status === 404) {
+        toast.error(`Session not found. It may have expired or been corrupted.`, {
+          autoClose: 5000,
+        });
+      } else if (error.code === 'ECONNABORTED') {
+        return;
+      }
+      
+      if (error.response?.status === 404) {
+        statusPollingRef.current = false;
+        if (statusIntervalRef.current) {
+          clearInterval(statusIntervalRef.current);
+          statusIntervalRef.current = null;
+        }
+        setIsWiping(false);
+        clearSession();
+      }
+    }
+  };
+
+  const manualStatusCheck = async () => {
+    if (!sessionId) {
+      toast.error('No active wipe session');
+      return;
+    }
+    
+    try {
+      const toastId = toast.loading('Checking wipe status...', {
+        position: "top-right",
+        autoClose: false,
+      });
+      
+      await checkWipeStatus(sessionId);
+      
+      toast.update(toastId, {
+        render: 'Status checked',
+        type: toast.TYPE.INFO,
+        isLoading: false,
+        autoClose: 2000,
+      });
+    } catch (error) {
+      toast.error('Failed to check status');
+    }
+  };
+
+  const handleBackupRequest = (items) => {
+  console.log('Backup requested with items:', items);
+  console.log('Items structure:', JSON.stringify(items, null, 2));
+  
+  if (!sessionId) {
+    const newSessionId = createNewSession({
+      paths: items.map(item => item.path),
+      settings: wipeSettings,
+      status: 'backup-requested'
+    });
+    console.log('Created new session:', newSessionId);
+    toast.info('Created new session for backup');
+  }
+  
+  // Make sure we're passing an array of objects with path and name
+  const filesForBackup = items.map(item => {
+    console.log('Processing item:', item);
+    return {
+      path: item.path,
+      name: item.name || item.path.split('/').pop(),
+      type: item.type || 'file'
+    };
+  });
+  
+  console.log('Files for backup:', filesForBackup);
+  console.log('Files JSON:', JSON.stringify(filesForBackup, null, 2));
+  
+  setFilesForBackup(filesForBackup);
+  setShowS3UploadModal(true);
+};
+
+  const handleUploadComplete = (result) => {
+    toast.success(`${result.uploaded} file(s) backed up to AWS S3`, {
+      autoClose: 5000,
+    });
+  };
+
+  const downloadCertificate = async () => {
+    if (!sessionId) {
+      toast.error('No wipe session found');
+      return;
+    }
+
+    const sessionStatus = sessionData?.status;
+    if (sessionStatus !== 'completed') {
+      toast.error('Wipe process is not completed yet');
+      return;
+    }
+
+    try {
+      const toastId = toast.loading('Generating certificate...', {
+        position: "top-right",
+        autoClose: false,
+      });
+
+      const response = await axios.get(
+        `${API_BASE_URL}/api/wipe/certificate/${sessionId}`,
+        { responseType: 'blob' }
+      );
+
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `wipe-certificate-${sessionId}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      toast.update(toastId, {
+        render: 'Certificate downloaded successfully!',
+        type: toast.TYPE.SUCCESS,
+        isLoading: false,
+        autoClose: 3000
+      });
+
+    } catch (error) {
+      console.error('Error downloading certificate:', error);
+      if (error.response?.status === 400) {
+        toast.error('Wipe process is not completed yet');
+      } else if (error.response?.status === 404) {
+        toast.error('Certificate not found. Session may have expired.');
+      } else {
+        toast.error('Failed to download certificate.');
+      }
+    }
+  };
+
+  const downloadLogs = async () => {
+    if (!sessionId) {
+      toast.error('No active wipe session found');
+      return;
+    }
+
+    try {
+      const toastId = toast.loading('Fetching logs...', {
+        position: "top-right",
+        autoClose: false,
+      });
+
+      const response = await axios.get(
+        `${API_BASE_URL}/api/wipe/logs/${sessionId}`,
+        { 
+          responseType: 'blob',
+          timeout: 30000
+        }
+      );
+
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `wipe-logs-${sessionId}.txt`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      
+      setTimeout(() => window.URL.revokeObjectURL(url), 100);
+
+      toast.update(toastId, {
+        render: 'Logs downloaded successfully!',
+        type: toast.TYPE.SUCCESS,
+        isLoading: false,
+        autoClose: 3000
+      });
+
+    } catch (error) {
+      console.error('Error downloading logs:', error);
+      
+      let errorMessage = 'Failed to download logs';
+      if (error.response?.status === 404) {
+        errorMessage = 'Session not found. It may have expired or been cleaned up.';
+      } else if (error.code === 'ECONNABORTED') {
+        errorMessage = 'Request timeout. Server may be busy.';
+      } else if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
+      }
+      
+      toast.error(errorMessage, {
+        autoClose: 5000,
+      });
+    }
+  };
+
+  const viewLogs = async () => {
+    if (!sessionId) {
+      toast.error('No session selected');
+      return;
+    }
+    
+    try {
+      const toastId = toast.loading('Loading logs...');
+      const response = await axios.get(`${API_BASE_URL}/api/wipe/logs/${sessionId}`, {
+        responseType: 'text'
+      });
+      setLogsContent(response.data);
+      setShowLogsModal(true);
+      toast.dismiss(toastId);
+    } catch (error) {
+      console.error('Error loading logs:', error);
+      toast.error('Failed to load logs');
+    }
+  };
+
+  const downloadLogsFromModal = () => {
+    const blob = new Blob([logsContent], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `wipe-logs-${sessionId}.txt`;
+    a.click();
+    setShowLogsModal(false);
+  };
+
+  const loadSession = async (sessionIdToLoad) => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/wipe/status/${sessionIdToLoad}`);
+      const session = response.data;
+      
+      updateSession(session);
       setWipeStatus(session.status);
       setWipeProgress(session.progress || 0);
       
       if (session.status === 'in-progress') {
         setIsWiping(true);
-        startStatusPolling(sessionId);
+        startStatusPolling(sessionIdToLoad);
       } else {
         setIsWiping(false);
       }
       
       setShowSessionsList(false);
-      toast.success(`Loaded session: ${sessionId.substring(0, 8)}`);
+      toast.success(`Loaded session: ${sessionIdToLoad.substring(0, 8)}`);
       
     } catch (error) {
       toast.error('Failed to load session');
     }
   };
 
-  // Calculate statistics
   const stats = {
     totalFiles: paths.filter(p => p.type === 'file').length,
     totalFolders: paths.filter(p => p.type === 'directory').length,
     totalSize: paths.reduce((total, p) => total + (p.size || 0), 0)
   };
 
-  // Format file size
   const formatFileSize = (bytes) => {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -1241,30 +1204,31 @@ const downloadLogsFromModal = () => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  // Get status display
-  // Get status display - UPDATED
-const getStatusText = () => {
-  if (!currentSession) return 'No active session';
-  
-  switch (wipeStatus) {
-    case 'starting':
-      return 'Starting...';
-    case 'in-progress':
-      return `In Progress (${wipeProgress}%)`;
-    case 'completed':
-      return 'Completed';
-    case 'failed':
-      return 'Failed';
-    default:
-      return sessionDetails?.status === 'in-progress' 
-        ? `In Progress (${wipeProgress}%)` 
-        : sessionDetails?.status || 'Unknown';
-  }
-};
+  const getStatusText = () => {
+    if (!sessionId) return 'No active session';
+    
+    const currentStatus = sessionData?.status || wipeStatus;
+    
+    switch (currentStatus) {
+      case 'starting':
+        return 'Starting...';
+      case 'in-progress':
+        return `In Progress (${wipeProgress}%)`;
+      case 'completed':
+        return 'Completed';
+      case 'failed':
+        return 'Failed';
+      case 'backup-requested':
+        return 'Backup Requested';
+      default:
+        return currentStatus || 'Unknown';
+    }
+  };
 
-  // Get status color
   const getStatusColor = () => {
-    switch (wipeStatus) {
+    const currentStatus = sessionData?.status || wipeStatus;
+    
+    switch (currentStatus) {
       case 'starting':
         return 'bg-blue-100 text-blue-800';
       case 'in-progress':
@@ -1273,17 +1237,17 @@ const getStatusText = () => {
         return 'bg-green-100 text-green-800';
       case 'failed':
         return 'bg-red-100 text-red-800';
+      case 'backup-requested':
+        return 'bg-purple-100 text-purple-800';
       default:
-        if (sessionDetails?.status === 'completed') return 'bg-green-100 text-green-800';
-        if (sessionDetails?.status === 'failed') return 'bg-red-100 text-red-800';
-        if (sessionDetails?.status === 'in-progress') return 'bg-yellow-100 text-yellow-800';
         return 'bg-gray-100 text-gray-800';
     }
   };
 
-  // Get status icon
   const getStatusIcon = () => {
-    switch (wipeStatus) {
+    const currentStatus = sessionData?.status || wipeStatus;
+    
+    switch (currentStatus) {
       case 'starting':
         return <FiClock className="w-4 h-4 mr-2" />;
       case 'in-progress':
@@ -1292,10 +1256,9 @@ const getStatusText = () => {
         return <FiCheck className="w-4 h-4 mr-2" />;
       case 'failed':
         return <FiAlertCircle className="w-4 h-4 mr-2" />;
+      case 'backup-requested':
+        return <FiCloud className="w-4 h-4 mr-2" />;
       default:
-        if (sessionDetails?.status === 'completed') return <FiCheck className="w-4 h-4 mr-2" />;
-        if (sessionDetails?.status === 'failed') return <FiAlertCircle className="w-4 h-4 mr-2" />;
-        if (sessionDetails?.status === 'in-progress') return <FiRefreshCw className="w-4 h-4 mr-2 animate-spin" />;
         return <FiClock className="w-4 h-4 mr-2" />;
     }
   };
@@ -1315,45 +1278,42 @@ const getStatusText = () => {
         theme="light"
       />
       
-      {/* Modals */}
       <FileBrowserModal
-    isOpen={showFileBrowser}
-    onClose={() => setShowFileBrowser(false)}
-    onSelect={handleFileSelection}
-    currentPath={currentBrowserPath}
-    files={browserFiles}
-    onNavigate={navigateInBrowser}
-    onNavigateUp={navigateUpInBrowser}
-    baseDirectory={browserFiles.length > 0 ? browserFiles[0]?.baseDirectory : ''}
-  />
+        isOpen={showFileBrowser}
+        onClose={() => setShowFileBrowser(false)}
+        onSelect={handleFileSelection}
+        currentPath={currentBrowserPath}
+        files={browserFiles}
+        onNavigate={navigateInBrowser}
+        onNavigateUp={navigateUpInBrowser}
+        baseDirectory={browserFiles.length > 0 ? browserFiles[0]?.baseDirectory : ''}
+      />
       
       <ConfirmationDialog
-  isOpen={showConfirmation}
-  onClose={() => setShowConfirmation(false)}
-  onConfirm={confirmWipe}
-  onBackupRequest={handleBackupRequest}  // Add this prop
-  items={paths}
-  wipeSettings={wipeSettings}
-/>
+        isOpen={showConfirmation}
+        onClose={() => setShowConfirmation(false)}
+        onConfirm={confirmWipe}
+        onBackupRequest={handleBackupRequest}
+        items={paths}
+        wipeSettings={wipeSettings}
+      />
 
-// Add the S3UploadModal component
-<S3UploadModal
-  isOpen={showS3UploadModal}
-  onClose={() => setShowS3UploadModal(false)}
-  selectedFiles={filesForBackup}
-  sessionId={currentSession} // Ensure sessionId is passed
-  onUploadComplete={handleUploadComplete}
-/>
+      <S3UploadModal
+        isOpen={showS3UploadModal}
+        onClose={() => setShowS3UploadModal(false)}
+        selectedFiles={filesForBackup}
+        sessionId={sessionId}
+        onUploadComplete={handleUploadComplete}
+      />
       
       <LogsModal
-  isOpen={showLogsModal}
-  onClose={() => setShowLogsModal(false)}
-  content={logsContent}
-  sessionId={currentSession} // This should now always have a value
-  onDownload={downloadLogsFromModal}
-/>
+        isOpen={showLogsModal}
+        onClose={() => setShowLogsModal(false)}
+        content={logsContent}
+        sessionId={sessionId}
+        onDownload={downloadLogsFromModal}
+      />
       
-      {/* Sessions List Modal */}
       {showSessionsList && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden">
@@ -1413,7 +1373,7 @@ const getStatusText = () => {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              setCurrentSession(session.id);
+                              loadSession(session.id);
                               downloadLogs();
                             }}
                             className="mt-2 text-xs bg-gray-800 text-white px-3 py-1 rounded hover:bg-gray-900"
@@ -1441,7 +1401,6 @@ const getStatusText = () => {
       )}
       
       <div className="max-w-6xl mx-auto">
-        {/* Header */}
         <header className="mb-8 md:mb-12">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center space-x-4">
@@ -1476,7 +1435,6 @@ const getStatusText = () => {
             </div>
           </div>
 
-          {/* Stats Card */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
             <div className="bg-white rounded-xl shadow p-4 border border-gray-200">
               <div className="flex items-center space-x-3">
@@ -1531,7 +1489,6 @@ const getStatusText = () => {
         </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Left Column - Main Interface */}
           <div className="lg:col-span-2">
             <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
               <div className="flex items-center justify-between mb-6">
@@ -1547,7 +1504,6 @@ const getStatusText = () => {
                 </div>
               </div>
 
-              {/* Browse Button */}
               <div className="mb-8">
                 <button
                   onClick={openFileBrowser}
@@ -1569,7 +1525,6 @@ const getStatusText = () => {
                 </button>
               </div>
 
-              {/* Selected Items Section */}
               <div className="mb-8">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="font-semibold text-gray-900">
@@ -1648,7 +1603,6 @@ const getStatusText = () => {
                 )}
               </div>
 
-              {/* Advanced Settings */}
               <div className="mb-8">
                 <button
                   onClick={() => setShowAdvanced(!showAdvanced)}
@@ -1723,7 +1677,6 @@ const getStatusText = () => {
                 )}
               </div>
 
-              {/* Platform Selection */}
               <div className="mb-8">
                 <label className="block text-sm font-medium text-gray-700 mb-3">
                   Select Platform for Offline Script
@@ -1760,7 +1713,6 @@ const getStatusText = () => {
                 </div>
               </div>
 
-              {/* Action Buttons */}
               <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
                 <button
                   onClick={downloadScript}
@@ -1792,13 +1744,11 @@ const getStatusText = () => {
             </div>
           </div>
 
-          {/* Right Column - Status & Info */}
           <div className="space-y-6">
-            {/* Wipe Status Card */}
             <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xl font-bold text-gray-900">Wipe Status</h3>
-                {currentSession && (
+                {sessionId && (
                   <div className="flex items-center space-x-2">
                     <button
                       onClick={manualStatusCheck}
@@ -1808,15 +1758,14 @@ const getStatusText = () => {
                       <FiRefreshCw className="w-3 h-3" />
                     </button>
                     <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded">
-                      ID: {currentSession.substring(0, 8)}
+                      ID: {sessionId.substring(0, 8)}
                     </span>
                   </div>
                 )}
               </div>
               
-              {currentSession ? (
+              {sessionId ? (
                 <div className="space-y-4">
-                  {/* Status Display */}
                   <div className="flex items-center justify-between">
                     <span className="text-gray-600">Status:</span>
                     <span className={`px-3 py-1 rounded-full text-sm font-medium flex items-center ${getStatusColor()}`}>
@@ -1825,8 +1774,7 @@ const getStatusText = () => {
                     </span>
                   </div>
                   
-                  {/* Progress Bar */}
-                  {(wipeStatus === 'in-progress' || sessionDetails?.status === 'in-progress') && (
+                  {(wipeStatus === 'in-progress' || sessionData?.status === 'in-progress') && (
                     <div className="space-y-2">
                       <div className="flex justify-between text-sm text-gray-600">
                         <span>Progress</span>
@@ -1841,35 +1789,33 @@ const getStatusText = () => {
                     </div>
                   )}
                   
-                  {/* Session Details */}
-                  {sessionDetails && (
+                  {sessionData && (
                     <div className="bg-gray-50 rounded-lg p-3 space-y-1 text-sm">
                       <div className="flex justify-between">
                         <span className="text-gray-600">Files:</span>
-                        <span className="font-medium">{sessionDetails.filesWiped || 0}</span>
+                        <span className="font-medium">{sessionData.filesWiped || 0}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-600">Folders:</span>
-                        <span className="font-medium">{sessionDetails.directoriesWiped || 0}</span>
+                        <span className="font-medium">{sessionData.directoriesWiped || 0}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-600">Started:</span>
                         <span className="font-medium">
-                          {sessionDetails.startTime ? new Date(sessionDetails.startTime).toLocaleTimeString() : 'N/A'}
+                          {sessionData.startTime ? new Date(sessionData.startTime).toLocaleTimeString() : 'N/A'}
                         </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-600">Data Wiped:</span>
                         <span className="font-medium">
-                          {sessionDetails.totalSize ? formatFileSize(sessionDetails.totalSize) : '0 Bytes'}
+                          {sessionData.totalSize ? formatFileSize(sessionData.totalSize) : '0 Bytes'}
                         </span>
                       </div>
                     </div>
                   )}
                   
-                  {/* Action Buttons */}
                   <div className="space-y-3">
-                    {(wipeStatus === 'completed' || sessionDetails?.status === 'completed') && (
+                    {(wipeStatus === 'completed' || sessionData?.status === 'completed') && (
                       <>
                         <button
                           onClick={downloadCertificate}
@@ -1897,11 +1843,11 @@ const getStatusText = () => {
                       </>
                     )}
                     
-                    {(wipeStatus === 'failed' || sessionDetails?.status === 'failed') && (
+                    {(wipeStatus === 'failed' || sessionData?.status === 'failed') && (
                       <>
                         <div className="bg-red-50 border border-red-200 rounded-lg p-3">
                           <p className="text-sm text-red-800">
-                            <span className="font-semibold">Error:</span> {sessionDetails?.error || 'Unknown error'}
+                            <span className="font-semibold">Error:</span> {sessionData?.error || 'Unknown error'}
                           </p>
                         </div>
                         <button
@@ -1914,7 +1860,7 @@ const getStatusText = () => {
                       </>
                     )}
                     
-                    {(wipeStatus === 'in-progress' || sessionDetails?.status === 'in-progress') && (
+                    {(wipeStatus === 'in-progress' || sessionData?.status === 'in-progress') && (
                       <button
                         onClick={downloadLogs}
                         className="w-full py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg font-medium transition-colors flex items-center justify-center space-x-2"
@@ -1950,7 +1896,6 @@ const getStatusText = () => {
               )}
             </div>
 
-            {/* Security Standards Card */}
             <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
               <h3 className="text-xl font-bold text-gray-900 mb-4">Security Standards</h3>
               <div className="space-y-4">
@@ -1996,7 +1941,6 @@ const getStatusText = () => {
               </div>
             </div>
 
-            {/* Quick Guide */}
             <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-6">
               <h3 className="text-xl font-bold text-gray-900 mb-4">How It Works</h3>
               <ol className="space-y-3 text-sm">
@@ -2021,7 +1965,6 @@ const getStatusText = () => {
           </div>
         </div>
 
-        {/* Footer */}
         <footer className="mt-12 pt-8 border-t border-gray-300">
           <div className="text-center">
             <p className="text-sm text-gray-600">
