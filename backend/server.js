@@ -1822,8 +1822,8 @@ app.use((req, res) => {
   });
 });
 
-// Start server
-app.listen(PORT, () => {
+// Start server with error handling
+const server = app.listen(PORT, () => {
   console.log(`🚀 SecureWipe backend server running on port ${PORT}`);
   console.log(`📁 Base directory: ${BASE_DIRECTORY}`);
   console.log(`📁 Sessions directory: ${SESSIONS_DIR}`);
@@ -1860,6 +1860,61 @@ app.listen(PORT, () => {
       logger.info(`Cleaned up ${cleanedCount} old sessions from memory`);
     }
   }, 6 * 60 * 60 * 1000);
+});
+
+// Handle server errors
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`\n❌ ERROR: Port ${PORT} is already in use!`);
+    console.error(`\n💡 Solutions:`);
+    console.error(`   1. Kill the process using the port:`);
+    console.error(`      Windows: netstat -ano | findstr :${PORT}`);
+    console.error(`               taskkill /PID <PID> /F`);
+    console.error(`      Linux/Mac: lsof -ti:${PORT} | xargs kill -9`);
+    console.error(`   2. Use a different port by setting PORT in .env file`);
+    console.error(`   3. The process might be a zombie from a previous run\n`);
+    process.exit(1);
+  } else {
+    console.error('❌ Server error:', error);
+    process.exit(1);
+  }
+});
+
+// Graceful shutdown handlers
+const gracefulShutdown = (signal) => {
+  console.log(`\n⚠️  ${signal} received. Gracefully shutting down...`);
+  
+  server.close(() => {
+    console.log('✅ Server closed. Cleaning up...');
+    
+    // Clean up any active operations
+    wipeSessions.clear();
+    completedNotifications.clear();
+    
+    console.log('✅ Cleanup complete. Exiting process.');
+    process.exit(0);
+  });
+  
+  // Force close after 10 seconds
+  setTimeout(() => {
+    console.error('⚠️  Forcing shutdown after timeout');
+    process.exit(1);
+  }, 10000);
+};
+
+// Listen for termination signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught errors
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  gracefulShutdown('UNCAUGHT_EXCEPTION');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  gracefulShutdown('UNHANDLED_REJECTION');
 });
 
 module.exports = app;

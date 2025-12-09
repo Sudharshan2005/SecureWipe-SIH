@@ -27,6 +27,7 @@ const S3UploadModal = ({
   const [uploadStatus, setUploadStatus] = useState('');
   const [uploadResults, setUploadResults] = useState([]);
   const [errors, setErrors] = useState([]);
+  const [selectedForBackup, setSelectedForBackup] = useState([]);
 
   const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 
@@ -38,10 +39,28 @@ const S3UploadModal = ({
       setUploadStatus('');
       setUploadResults([]);
       setErrors([]);
+      setSelectedForBackup([]);
     } else {
       console.log('[S3UploadModal] Modal opened with selectedFiles:', selectedFiles);
+      // Auto-select all files when modal opens
+      const validFiles = Array.isArray(selectedFiles) ? selectedFiles : [];
+      const processed = validFiles.map(file => {
+        if (typeof file === 'string') {
+          return {
+            path: file,
+            name: file.split('/').pop() || file,
+            type: 'file'
+          };
+        }
+        return {
+          path: file.path || '',
+          name: file.name || file.path?.split('/').pop() || '',
+          type: file.type || 'file'
+        };
+      }).filter(file => file.path && file.name);
+      setSelectedForBackup(processed.map(f => f.path));
     }
-  }, [isOpen]);
+  }, [isOpen, selectedFiles]);
   
   // Log when selectedFiles changes
   useEffect(() => {
@@ -81,17 +100,40 @@ const S3UploadModal = ({
   
   console.log('[S3UploadModal] Final processedFiles:', processedFiles);
 
+  // Get only the files that are selected for backup
+  const filesToUpload = processedFiles.filter(file => selectedForBackup.includes(file.path));
+
+  // Handle file selection toggle
+  const toggleFileSelection = (filePath) => {
+    setSelectedForBackup(prev => {
+      if (prev.includes(filePath)) {
+        return prev.filter(p => p !== filePath);
+      } else {
+        return [...prev, filePath];
+      }
+    });
+  };
+
+  // Select/deselect all files
+  const toggleSelectAll = () => {
+    if (selectedForBackup.length === processedFiles.length) {
+      setSelectedForBackup([]);
+    } else {
+      setSelectedForBackup(processedFiles.map(f => f.path));
+    }
+  };
+
   // In the handleUpload function of S3UploadModal.js
 // In S3UploadModal.js - Update the handleUpload function
 
 const handleUpload = async () => {
   console.log('[S3UploadModal] handleUpload called');
-  console.log('[S3UploadModal] processedFiles:', processedFiles);
-  console.log('[S3UploadModal] processedFiles.length:', processedFiles.length);
+  console.log('[S3UploadModal] filesToUpload:', filesToUpload);
+  console.log('[S3UploadModal] filesToUpload.length:', filesToUpload.length);
   
-  if (processedFiles.length === 0) {
-    console.error('[S3UploadModal] No files to upload');
-    setErrors([{ message: 'No valid files selected for upload. Please select files from the file list.' }]);
+  if (filesToUpload.length === 0) {
+    console.error('[S3UploadModal] No files selected for upload');
+    setErrors([{ message: 'Please select at least one file to backup to S3.' }]);
     return;
   }
 
@@ -102,16 +144,16 @@ const handleUpload = async () => {
   setErrors([]);
 
   try {
-    // Prepare request data - ensure processedFiles is a proper array
+    // Prepare request data - only send selected files
     const requestData = {
-      files: processedFiles,
+      files: filesToUpload,
       password: password.trim() || null,
       sessionId: sessionId
     };
 
     console.log('📤 Sending upload request data:', JSON.stringify(requestData, null, 2));
-    console.log('Number of files:', processedFiles.length);
-    console.log('File details:', processedFiles);
+    console.log('Number of files:', filesToUpload.length);
+    console.log('File details:', filesToUpload);
 
     setUploadStatus('Uploading to S3...');
     setUploadProgress(30);
@@ -215,30 +257,75 @@ const handleUpload = async () => {
         <div className="p-6 overflow-y-auto max-h-[60vh]">
           {/* File Selection Summary */}
           <div className="mb-6">
-            <h3 className="font-semibold text-gray-900 mb-3 flex items-center">
-              <FiFile className="w-5 h-5 mr-2 text-blue-600" />
-              Files to Upload ({processedFiles.length})
-            </h3>
-            <div className="bg-gray-50 rounded-lg p-3 max-h-32 overflow-y-auto">
-              {processedFiles.length === 0 ? (
-                <p className="text-gray-500 text-center py-4">No files selected</p>
-              ) : (
-                processedFiles.map((file, index) => (
-                  <div key={index} className="flex items-center justify-between p-2 hover:bg-gray-100 rounded">
-                    <div className="flex items-center space-x-2">
-                      <FiFile className="w-4 h-4 text-gray-500" />
-                      <span className="text-sm text-gray-700 truncate">{file.name}</span>
-                    </div>
-                    <span className="text-xs text-gray-500">{file.type}</span>
-                  </div>
-                ))
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-gray-900 flex items-center">
+                <FiFile className="w-5 h-5 mr-2 text-blue-600" />
+                Select Files to Backup ({selectedForBackup.length}/{processedFiles.length})
+              </h3>
+              {processedFiles.length > 0 && (
+                <button
+                  onClick={toggleSelectAll}
+                  className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+                >
+                  {selectedForBackup.length === processedFiles.length ? 'Deselect All' : 'Select All'}
+                </button>
               )}
             </div>
+            <div className="bg-gray-50 rounded-lg border border-gray-200 p-3 max-h-64 overflow-y-auto">
+              {processedFiles.length === 0 ? (
+                <p className="text-gray-500 text-center py-4">No files available for backup</p>
+              ) : (
+                <div className="space-y-2">
+                  {processedFiles.map((file, index) => {
+                    const isSelected = selectedForBackup.includes(file.path);
+                    return (
+                      <div 
+                        key={index} 
+                        onClick={() => toggleFileSelection(file.path)}
+                        className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-all ${
+                          isSelected 
+                            ? 'bg-blue-50 border-2 border-blue-300' 
+                            : 'bg-white border-2 border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-3 flex-1 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleFileSelection(file.path)}
+                            className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                          <FiFile className={`w-4 h-4 flex-shrink-0 ${isSelected ? 'text-blue-600' : 'text-gray-500'}`} />
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-sm font-medium truncate ${isSelected ? 'text-blue-900' : 'text-gray-700'}`}>
+                              {file.name}
+                            </p>
+                            <p className="text-xs text-gray-500 truncate">{file.path}</p>
+                          </div>
+                        </div>
+                        <span className={`text-xs px-2 py-1 rounded flex-shrink-0 ml-2 ${
+                          isSelected ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
+                        }`}>
+                          {file.type}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            {processedFiles.length > 0 && selectedForBackup.length === 0 && (
+              <p className="text-sm text-amber-600 mt-2 flex items-center">
+                <FiAlertCircle className="w-4 h-4 mr-1" />
+                Please select at least one file to backup
+              </p>
+            )}
           </div>
 
           {/* Password Input */}
           <div className="mb-6">
-            <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
+            <label className="flex items-center text-sm font-medium text-gray-700 mb-2">
               <FiLock className="w-4 h-4 mr-2" />
               Optional Encryption Password
             </label>
@@ -349,9 +436,9 @@ const handleUpload = async () => {
             </button>
             <button
               onClick={handleUpload}
-              disabled={isUploading || processedFiles.length === 0}
+              disabled={isUploading || selectedForBackup.length === 0}
               className={`flex-1 py-3 px-6 rounded-lg font-semibold transition-colors flex items-center justify-center space-x-2 ${
-                isUploading || processedFiles.length === 0
+                isUploading || selectedForBackup.length === 0
                   ? 'bg-gray-300 cursor-not-allowed'
                   : 'bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white'
               }`}
@@ -364,7 +451,7 @@ const handleUpload = async () => {
               ) : (
                 <>
                   <FiUpload className="w-5 h-5" />
-                  <span>Upload to S3 ({processedFiles.length})</span>
+                  <span>Upload to S3 ({selectedForBackup.length})</span>
                 </>
               )}
             </button>
