@@ -581,9 +581,31 @@ export default function Home() {
   const [loadingBrowser, setLoadingBrowser] = useState(false);
   const [showS3UploadModal, setShowS3UploadModal] = useState(false);
   const [filesForBackup, setFilesForBackup] = useState([]);
+  const [username, setUsername] = useState('');
 
   const statusIntervalRef = useRef(null);
   const statusPollingRef = useRef(false);
+
+  useEffect(() => {
+  // Check for existing username in sessionStorage
+  const savedUsername = sessionStorage.getItem('username');
+  if (savedUsername) {
+    setUsername(savedUsername);
+  } else {
+    // Prompt for username on first load
+    const inputUsername = prompt(
+      'Please enter your username for session tracking and AWS S3 storage:',
+      'user-' + Date.now().toString().slice(-6)
+    );
+    
+    if (inputUsername && inputUsername.trim()) {
+      const cleanUsername = inputUsername.trim();
+      setUsername(cleanUsername);
+      sessionStorage.setItem('username', cleanUsername);
+      toast.info(`Welcome, ${cleanUsername}! Your sessions will be saved to AWS S3.`);
+    }
+  }
+}, []);
 
   // Initialize session on page load
   useEffect(() => {
@@ -796,83 +818,132 @@ export default function Home() {
     }
   };
 
-  const startWipe = () => {
-    if (paths.length === 0) {
-      toast.error('Please select at least one file or folder');
-      return;
-    }
+  // Update your startWipe function to include username
+const startWipe = () => {
+  if (paths.length === 0) {
+    toast.error('Please select at least one file or folder');
+    return;
+  }
 
-    // Create session if doesn't exist
-    if (!sessionId) {
-      createNewSession({
-        paths: paths.map(p => p.path),
-        settings: wipeSettings,
-        status: 'pending',
-        filesWiped: 0,
-        directoriesWiped: 0,
-        totalSize: 0
-      });
-    } else {
-      updateSession({
-        paths: paths.map(p => p.path),
-        settings: wipeSettings,
-        status: 'pending'
-      });
-    }
+  // Get username from sessionStorage
+  const username = sessionStorage.getItem('username') || 'anonymous';
+  
+  // Create session if doesn't exist
+  if (!sessionId) {
+    createNewSession({
+      paths: paths.map(p => p.path),
+      settings: wipeSettings,
+      status: 'pending',
+      filesWiped: 0,
+      directoriesWiped: 0,
+      totalSize: 0,
+      username: username  // Add username to session
+    });
+  } else {
+    updateSession({
+      paths: paths.map(p => p.path),
+      settings: wipeSettings,
+      status: 'pending',
+      username: username  // Add username to session
+    });
+  }
 
-    setShowConfirmation(true);
-  };
+  setShowConfirmation(true);
+};
 
-  const confirmWipe = async () => {
-    setShowConfirmation(false);
-    setIsWiping(true);
-    setWipeStatus('starting');
-    setWipeProgress(0);
+// Update your confirmWipe function
+const confirmWipe = async () => {
+  setShowConfirmation(false);
+  setIsWiping(true);
+  setWipeStatus('starting');
+  setWipeProgress(0);
+  
+  try {
+    const validPaths = paths.map(p => p.path);
     
-    try {
-      const validPaths = paths.map(p => p.path);
-      
-      const toastId = toast.loading('Starting secure wipe process...', {
-        position: "top-right",
-        autoClose: false,
-      });
+    // Get username from sessionStorage
+    const username = sessionStorage.getItem('username') || 'anonymous';
+    
+    const toastId = toast.loading('Starting secure wipe process...', {
+      position: "top-right",
+      autoClose: false,
+    });
 
-      const response = await axios.post(`${API_BASE_URL}/api/wipe/start`, {
-        paths: validPaths,
-        settings: wipeSettings,
-        sessionId: sessionId
-      });
+    const response = await axios.post(`${API_BASE_URL}/api/wipe/start`, {
+      paths: validPaths,
+      settings: wipeSettings,
+      sessionId: sessionId,
+      username: username  // Send username to backend
+    });
 
-      toast.update(toastId, {
-        render: 'Wipe process initiated! Tracking progress...',
-        type: toast.TYPE.INFO,
-        isLoading: false,
-        autoClose: 3000
-      });
+    toast.update(toastId, {
+      render: 'Wipe process initiated! Certificate and logs will be auto-uploaded to AWS S3 upon completion.',
+      type: toast.TYPE.INFO,
+      isLoading: false,
+      autoClose: 3000
+    });
 
-      setWipeStatus('in-progress');
-      updateSession({ status: 'in-progress' });
+    setWipeStatus('in-progress');
+    updateSession({ 
+      status: 'in-progress',
+      username: username 
+    });
 
-      startStatusPolling(sessionId);
-      loadAllSessions();
+    startStatusPolling(sessionId);
+    loadAllSessions();
 
-    } catch (error) {
-      console.error('Error starting wipe:', error);
-      const errorMsg = error.response?.data?.error || 'Failed to start wipe process';
-      const invalidPaths = error.response?.data?.invalidPaths;
-      
-      if (invalidPaths) {
-        toast.error(`Invalid paths: ${invalidPaths.join(', ')}`);
-      } else {
-        toast.error(errorMsg);
-      }
-      
-      setIsWiping(false);
-      setWipeStatus(null);
-      setWipeProgress(0);
-      updateSession({ status: 'failed', error: errorMsg });
+  } catch (error) {
+    console.error('Error starting wipe:', error);
+    const errorMsg = error.response?.data?.error || 'Failed to start wipe process';
+    const invalidPaths = error.response?.data?.invalidPaths;
+    
+    if (invalidPaths) {
+      toast.error(`Invalid paths: ${invalidPaths.join(', ')}`);
+    } else {
+      toast.error(errorMsg);
     }
-  };
+    
+    setIsWiping(false);
+    setWipeStatus(null);
+    setWipeProgress(0);
+    updateSession({ status: 'failed', error: errorMsg });
+  }
+};
+
+// Add this function to check auto-upload status
+const checkAutoUploadStatus = async () => {
+  if (!sessionId) return;
+  
+  try {
+    const response = await axios.get(`${API_BASE_URL}/api/wipe/auto-upload-status/${sessionId}`);
+    const status = response.data;
+    
+    if (status.autoUploaded) {
+      // Update session with S3 URLs
+      updateSession({
+        certificateUrl: status.certificateUrl,
+        logsUrl: status.logsUrl,
+        mongoId: status.mongoId,
+        autoUploaded: true
+      });
+      
+      // Show success notification
+      toast.success('Certificate and logs auto-uploaded to AWS S3!', {
+        autoClose: 5000,
+      });
+    } else if (status.autoUploadFailed) {
+      toast.error(`Auto-upload failed: ${status.autoUploadError}`, {
+        autoClose: 5000,
+      });
+    }
+    
+    return status;
+  } catch (error) {
+    console.error('Error checking auto-upload status:', error);
+  }
+};
+
+  
 
   const startStatusPolling = (pollingSessionId) => {
     if (statusIntervalRef.current) {
@@ -896,78 +967,85 @@ export default function Home() {
   };
 
   const checkWipeStatus = async (sessionIdToCheck) => {
-    if (!sessionIdToCheck || !statusPollingRef.current) return;
+  if (!sessionIdToCheck || !statusPollingRef.current) return;
+  
+  try {
+    const response = await axios.get(`${API_BASE_URL}/api/wipe/status/${sessionIdToCheck}`, {
+      timeout: 5000
+    });
+    const session = response.data;
     
-    try {
-      const response = await axios.get(`${API_BASE_URL}/api/wipe/status/${sessionIdToCheck}`, {
-        timeout: 5000
-      });
-      const session = response.data;
-      
-      updateSession({
-        status: session.status,
-        progress: session.progress || 0,
-        filesWiped: session.filesWiped,
-        directoriesWiped: session.directoriesWiped,
-        totalSize: session.totalSize,
-        endTime: session.endTime,
-        details: session
-      });
-      
-      if (session.progress !== undefined) {
-        setWipeProgress(session.progress);
-      }
-      
-      if (session.status === 'completed' || session.status === 'failed') {
-        statusPollingRef.current = false;
-        if (statusIntervalRef.current) {
-          clearInterval(statusIntervalRef.current);
-          statusIntervalRef.current = null;
-        }
-        
-        setWipeStatus(session.status);
-        setIsWiping(false);
-        setWipeProgress(100);
-        
-        if (session.status === 'completed') {
-          toast.success(`Wipe completed! ${session.filesWiped || 0} files deleted`, {
-            autoClose: 8000,
-          });
-        } else {
-          toast.error(`Wipe failed: ${session.error || 'Unknown error'}`, {
-            autoClose: 8000,
-          });
-        }
-        
-        loadAllSessions();
-        
-      } else if (session.status === 'in-progress') {
-        setWipeStatus('in-progress');
-        setWipeProgress(session.progress || 0);
-      }
-      
-    } catch (error) {
-      console.error('Error checking status:', error);
-      
-      if (error.response?.status === 404) {
-        toast.error(`Session not found. It may have expired or been corrupted.`, {
-          autoClose: 5000,
-        });
-      } else if (error.code === 'ECONNABORTED') {
-        return;
-      }
-      
-      if (error.response?.status === 404) {
-        statusPollingRef.current = false;
-        if (statusIntervalRef.current) {
-          clearInterval(statusIntervalRef.current);
-          statusIntervalRef.current = null;
-        }
-        setIsWiping(false);
-        clearSession();
-      }
+    updateSession({
+      status: session.status,
+      progress: session.progress || 0,
+      filesWiped: session.filesWiped,
+      directoriesWiped: session.directoriesWiped,
+      totalSize: session.totalSize,
+      endTime: session.endTime,
+      details: session
+    });
+    
+    if (session.progress !== undefined) {
+      setWipeProgress(session.progress);
     }
-  };
+    
+    if (session.status === 'completed' || session.status === 'failed') {
+      statusPollingRef.current = false;
+      if (statusIntervalRef.current) {
+        clearInterval(statusIntervalRef.current);
+        statusIntervalRef.current = null;
+      }
+      
+      setWipeStatus(session.status);
+      setIsWiping(false);
+      setWipeProgress(100);
+      
+      if (session.status === 'completed') {
+        toast.success(`Wipe completed! ${session.filesWiped || 0} files deleted. Auto-uploading to AWS S3...`, {
+          autoClose: 8000,
+        });
+        
+        // Start checking for auto-upload completion
+        setTimeout(() => {
+          checkAutoUploadStatus();
+          // Check again after 5 seconds
+          setTimeout(checkAutoUploadStatus, 5000);
+        }, 2000);
+      } else {
+        toast.error(`Wipe failed: ${session.error || 'Unknown error'}`, {
+          autoClose: 8000,
+        });
+      }
+      
+      loadAllSessions();
+      
+    } else if (session.status === 'in-progress') {
+      setWipeStatus('in-progress');
+      setWipeProgress(session.progress || 0);
+    }
+    
+  } catch (error) {
+    console.error('Error checking status:', error);
+    
+    if (error.response?.status === 404) {
+      toast.error(`Session not found. It may have expired or been corrupted.`, {
+        autoClose: 5000,
+      });
+    } else if (error.code === 'ECONNABORTED') {
+      return;
+    }
+    
+    if (error.response?.status === 404) {
+      statusPollingRef.current = false;
+      if (statusIntervalRef.current) {
+        clearInterval(statusIntervalRef.current);
+        statusIntervalRef.current = null;
+      }
+      setIsWiping(false);
+      clearSession();
+    }
+  }
+};
 
   const manualStatusCheck = async () => {
     if (!sessionId) {

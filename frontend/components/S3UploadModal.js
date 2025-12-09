@@ -126,13 +126,11 @@ const S3UploadModal = ({
   // In the handleUpload function of S3UploadModal.js
 // In S3UploadModal.js - Update the handleUpload function
 
+// In S3UploadModal.js - Update the handleUpload function
 const handleUpload = async () => {
   console.log('[S3UploadModal] handleUpload called');
-  console.log('[S3UploadModal] filesToUpload:', filesToUpload);
-  console.log('[S3UploadModal] filesToUpload.length:', filesToUpload.length);
   
   if (filesToUpload.length === 0) {
-    console.error('[S3UploadModal] No files selected for upload');
     setErrors([{ message: 'Please select at least one file to backup to S3.' }]);
     return;
   }
@@ -144,23 +142,25 @@ const handleUpload = async () => {
   setErrors([]);
 
   try {
+    // Get username from sessionStorage
+    const username = sessionStorage.getItem('username') || 
+                    localStorage.getItem('username') || 
+                    'default-user';
+    
+    console.log(`👤 User identified: ${username}`);
+    
     // Prepare request data - only send selected files
     const requestData = {
       files: filesToUpload,
       password: password.trim() || null,
-      sessionId: sessionId
+      sessionId: sessionId,
+      username: username  // Add username to request
     };
 
     console.log('📤 Sending upload request data:', JSON.stringify(requestData, null, 2));
-    console.log('Number of files:', filesToUpload.length);
-    console.log('File details:', filesToUpload);
 
     setUploadStatus('Uploading to S3...');
     setUploadProgress(30);
-
-    // Use FormData instead of JSON for better compatibility
-    const formData = new FormData();
-    formData.append('data', JSON.stringify(requestData));
 
     // Make the API call
     const response = await axios.post(`${API_BASE_URL}/api/s3/upload`, requestData, {
@@ -179,6 +179,31 @@ const handleUpload = async () => {
     if (response.data.success) {
       setUploadResults(response.data.uploads || []);
       
+      // Store backup info in sessionStorage for later access
+      if (response.data.backupUrls && response.data.backupUrls.length > 0) {
+        const backupInfo = {
+          sessionId: sessionId,
+          backupUrls: response.data.backupUrls,
+          uploadedAt: new Date().toISOString(),
+          fileCount: response.data.backupUrls.length
+        };
+        
+        // Store in sessionStorage
+        sessionStorage.setItem(`backup_${sessionId}`, JSON.stringify(backupInfo));
+        
+        // Also store in user's backup list
+        const userBackups = JSON.parse(sessionStorage.getItem('userBackups') || '[]');
+        userBackups.push({
+          id: Date.now(),
+          sessionId: sessionId,
+          backupCount: response.data.backupUrls.length,
+          uploadedAt: new Date().toISOString()
+        });
+        sessionStorage.setItem('userBackups', JSON.stringify(userBackups));
+        
+        console.log('💾 Backup info saved to sessionStorage');
+      }
+      
       if (onUploadComplete) {
         onUploadComplete(response.data);
       }
@@ -194,7 +219,6 @@ const handleUpload = async () => {
 
   } catch (error) {
     console.error('❌ Upload error:', error);
-    console.error('❌ Error response:', error.response?.data);
     
     setUploadProgress(0);
     setUploadStatus('Upload failed');
@@ -205,18 +229,9 @@ const handleUpload = async () => {
       errorMessage = error.response.data.error;
     } else if (error.message.includes('Network Error')) {
       errorMessage = 'Network error. Please check your connection and server status.';
-    } else if (error.code === 'ECONNABORTED') {
-      errorMessage = 'Request timeout. The server may be busy or the file is too large.';
     }
     
     setErrors([{ message: errorMessage }]);
-    
-    // Log full error details
-    console.error('Full error details:', {
-      message: error.message,
-      response: error.response,
-      request: error.request
-    });
   } finally {
     setIsUploading(false);
   }

@@ -369,6 +369,7 @@ async function wipeDirectory(dirPath, sessionId) {
   return results;
 }
 
+// Update the updateWipeSession function to handle automatic uploads
 function updateWipeSession(sessionId, updates) {
   if (wipeSessions.has(sessionId)) {
     const session = wipeSessions.get(sessionId);
@@ -393,6 +394,15 @@ function updateWipeSession(sessionId, updates) {
     Object.assign(session, cleanUpdates);
     session.lastAccessed = new Date();
     
+    // Check if wipe is completed and trigger auto-upload
+    if (updates.status === 'completed') {
+      console.log(`✅ Wipe completed for session: ${sessionId}`);
+      console.log(`📦 Starting automatic upload of certificate and logs to AWS S3...`);
+      
+      // Start auto-upload process
+      autoUploadCertificateAndLogs(sessionId, session);
+    }
+    
     const importantUpdates = ['status', 'filesWiped', 'directoriesWiped', 'totalSize', 'progress', 'errors', 'endTime'];
     const hasImportantUpdate = Object.keys(updates).some(key => importantUpdates.includes(key));
     
@@ -411,36 +421,137 @@ function updateWipeSession(sessionId, updates) {
     if (updates.progress !== undefined && updates.progress % 25 === 0) {
       logger.info(`Session ${sessionId}: Progress ${updates.progress}% - ${session.filesWiped || 0} files, ${session.directoriesWiped || 0} directories`);
     }
-
-    if (updates.status === 'completed') {
-      setTimeout(async () => {
-        try {
-          // Get username from session (you need to store this when creating session)
-          const username = session.username || 'default-user';
-          
-          // Generate URLs
-          const baseUrl = `http://localhost:${PORT}`;
-          const certificateUrl = `${baseUrl}/api/wipe/certificate/${sessionId}`;
-          const logsUrl = `${baseUrl}/api/wipe/logs/${sessionId}`;
-          
-          // Save to user sessions
-          await axios.post(`${baseUrl}/api/user/session/save`, {
-            username,
-            sessionId,
-            certificate: certificateUrl,
-            logs: logsUrl
-          });
-          
-          console.log(`✅ Session ${sessionId} saved to user dashboard`);
-        } catch (error) {
-          console.error('❌ Failed to save session to dashboard:', error.message);
-        }
-      }, 1000);
-    }
     
     return session;
   }
   return null;
+}
+
+// Add this function to automatically upload certificate and logs
+async function autoUploadCertificateAndLogs(sessionId, session) {
+  try {
+    console.log(`🚀 Starting auto-upload for session: ${sessionId}`);
+    
+    // Get username from session or use default
+    const username = session.username || 'system-user';
+    
+    // Step 1: Generate and upload certificate
+    console.log(`📄 Generating certificate for session: ${sessionId}`);
+    const pdfBuffer = await generateCertificate(session);
+    
+    const certTimestamp = Date.now();
+    const certFileName = `certificate-${sessionId}-${certTimestamp}.pdf`;
+    const certTempPath = path.join(SESSIONS_DIR, certFileName);
+    
+    await fs.writeFile(certTempPath, pdfBuffer);
+    
+    // Upload certificate to S3
+    const certUploadResult = await s3Service.uploadToS3(certTempPath, certFileName);
+    
+    if (!certUploadResult.success) {
+      throw new Error(`Certificate upload failed: ${certUploadResult.error}`);
+    }
+    
+    console.log(`✅ Certificate uploaded to S3: ${certUploadResult.s3Url}`);
+    
+    // Step 2: Generate and upload logs
+    console.log(`📝 Generating logs for session: ${sessionId}`);
+    const logContent = generateLogContent(session);
+    
+    const logTimestamp = Date.now();
+    const logFileName = `logs-${sessionId}-${logTimestamp}.txt`;
+    const logTempPath = path.join(SESSIONS_DIR, logFileName);
+    
+    await fs.writeFile(logTempPath, logContent);
+    
+    // Upload logs to S3
+    const logUploadResult = await s3Service.uploadToS3(logTempPath, logFileName);
+    
+    if (!logUploadResult.success) {
+      throw new Error(`Logs upload failed: ${logUploadResult.error}`);
+    }
+    
+    console.log(`✅ Logs uploaded to S3: ${logUploadResult.s3Url}`);
+    
+    // Step 3: Create MongoDB document
+    console.log(`💾 Saving session data to MongoDB...`);
+    
+    const sessionData = {
+      username: username,
+      sessionId: sessionId,
+      certificateUrl: certUploadResult.s3Url,
+      certificateFile: certFileName,
+      logsUrl: logUploadResult.s3Url,
+      logsFile: logFileName,
+      filesWiped: session.filesWiped || 0,
+      directoriesWiped: session.directoriesWiped || 0,
+      totalSize: session.totalSize || 0,
+      status: session.status,
+      startTime: session.startTime,
+      endTime: session.endTime,
+      paths: session.paths || [],
+      settings: session.settings || {}
+    };
+    
+    // Save to MongoDB
+    const savedSession = await UserSession.findOneAndUpdate(
+      { sessionId: sessionId },
+      sessionData,
+      { 
+        upsert: true, 
+        new: true,
+        setDefaultsOnInsert: true 
+      }
+    );
+    
+    console.log(`✅ MongoDB document saved with ID: ${savedSession._id}`);
+    
+    // Step 4: Update session with S3 URLs
+    session.certificateUrl = certUploadResult.s3Url;
+    session.logsUrl = logUploadResult.s3Url;
+    session.mongoId = savedSession._id;
+    session.autoUploaded = true;
+    session.autoUploadTime = new Date();
+    
+    // Save updated session
+    wipeSessions.set(sessionId, session);
+    await saveSessionToFile(sessionId, session);
+    
+    // Step 5: Clean up temp files
+    await Promise.all([
+      fs.remove(certTempPath).catch(e => console.warn('Could not remove cert temp file:', e.message)),
+      fs.remove(logTempPath).catch(e => console.warn('Could not remove log temp file:', e.message))
+    ]);
+    
+    console.log(`🎉 Auto-upload completed successfully for session: ${sessionId}`);
+    console.log(`   Certificate: ${certUploadResult.s3Url}`);
+    console.log(`   Logs: ${logUploadResult.s3Url}`);
+    console.log(`   MongoDB ID: ${savedSession._id}`);
+    
+    return {
+      success: true,
+      certificateUrl: certUploadResult.s3Url,
+      logsUrl: logUploadResult.s3Url,
+      mongoId: savedSession._id
+    };
+    
+  } catch (error) {
+    console.error(`❌ Auto-upload failed for session ${sessionId}:`, error.message);
+    console.error(`Stack:`, error.stack);
+    
+    // Store error in session
+    if (wipeSessions.has(sessionId)) {
+      const session = wipeSessions.get(sessionId);
+      session.autoUploadError = error.message;
+      session.autoUploadFailed = true;
+      wipeSessions.set(sessionId, session);
+    }
+    
+    return {
+      success: false,
+      error: error.message
+    };
+  }
 }
 
 function generateCertificate(session) {
@@ -781,20 +892,22 @@ app.post('/api/wipe/start', async (req, res) => {
     } else {
       // Create new session
       const session = {
-        id: sessionId,
-        paths: validPaths.map(p => p.relativePath),
-        settings: settings,
-        startTime: new Date(),
-        status: 'pending',
-        filesWiped: 0,
-        directoriesWiped: 0,
-        totalSize: 0,
-        errors: [],
-        baseDirectory: BASE_DIRECTORY,
-        lastAccessed: new Date(),
-        from: 'memory',
-        clientProvided: !!clientSessionId
-      };
+  id: sessionId,
+  paths: validPaths.map(p => p.relativePath),
+  settings: settings,
+  startTime: new Date(),
+  status: 'pending',
+  filesWiped: 0,
+  directoriesWiped: 0,
+  totalSize: 0,
+  errors: [],
+  baseDirectory: BASE_DIRECTORY,
+  lastAccessed: new Date(),
+  from: 'memory',
+  clientProvided: !!clientSessionId,
+  // Add username from request body
+  username: req.body.username || 'anonymous'
+};
       
       wipeSessions.set(sessionId, session);
     }
@@ -1423,18 +1536,18 @@ log "Log saved to: \$LOG_FILE"
 // In server.js - Update the S3 upload endpoint
 
 // Update the S3 upload endpoint in server.js
+// Update the S3 upload endpoint in server.js
 app.post('/api/s3/upload', async (req, res) => {
   try {
     console.log('📤 S3 Upload request received');
     
-    const { files, password, sessionId } = req.body;
+    const { files, password, sessionId, username } = req.body; // Add username from request
     
     // Validate input
     if (!files || !Array.isArray(files) || files.length === 0) {
       return res.status(400).json({ 
         success: false,
-        error: 'No files specified for upload',
-        hint: 'Make sure files is an array with at least one file object'
+        error: 'No files specified for upload'
       });
     }
     
@@ -1445,11 +1558,9 @@ app.post('/api/s3/upload', async (req, res) => {
       });
     }
     
-    // Log file details
-    console.log(`Processing ${files.length} files for upload`);
-    files.forEach((file, index) => {
-      console.log(`  File ${index + 1}: ${file.name || 'unnamed'} (${file.path || 'no path'})`);
-    });
+    // Use provided username or default
+    const user = username || 'default-user';
+    console.log(`👤 User for backup: ${user}`);
     
     // Test S3 connection first
     console.log('🔄 Testing S3 connection before upload...');
@@ -1458,6 +1569,7 @@ app.post('/api/s3/upload', async (req, res) => {
     
     const uploadResults = [];
     const errors = [];
+    const backupUrls = [];
     
     // Process each file
     for (const fileInfo of files) {
@@ -1485,9 +1597,7 @@ app.post('/api/s3/upload', async (req, res) => {
         if (!fs.existsSync(fullPath)) {
           errors.push({ 
             file: fileInfo, 
-            error: `File not found: ${fullPath}`,
-            attemptedPath: fullPath,
-            baseDirectory: BASE_DIRECTORY
+            error: `File not found: ${fullPath}`
           });
           continue;
         }
@@ -1499,12 +1609,20 @@ app.post('/api/s3/upload', async (req, res) => {
         
         if (result.success) {
           uploadResults.push(result);
+          backupUrls.push({
+            fileName: result.fileName,
+            s3Url: result.s3Url,
+            fileUrl: result.fileUrl,
+            encrypted: result.encrypted,
+            size: result.size,
+            uploadedAt: result.uploadedAt,
+            isRealS3: result.isRealS3
+          });
           console.log(`✅ Uploaded: ${fileName} (${result.isRealS3 ? 'S3' : 'Local'})`);
         } else {
           errors.push({ 
             file: fileInfo, 
-            error: result.error || 'Upload failed',
-            details: result.details
+            error: result.error || 'Upload failed'
           });
         }
         
@@ -1512,9 +1630,54 @@ app.post('/api/s3/upload', async (req, res) => {
         console.error(`❌ Error processing file:`, fileError);
         errors.push({ 
           file: fileInfo, 
-          error: fileError.message,
-          stack: fileError.stack
+          error: fileError.message
         });
+      }
+    }
+    
+    // Save backup information to MongoDB
+    if (backupUrls.length > 0) {
+      try {
+        const backupData = {
+          username: user,
+          sessionId: sessionId,
+          backupUrls: backupUrls.map(item => item.s3Url),
+          fileDetails: backupUrls, // Store detailed file info
+          access: [user] // User can access their own backups
+        };
+        
+        console.log('💾 Saving backup to MongoDB...');
+        const savedBackup = await UserBackup.findOneAndUpdate(
+          { sessionId: sessionId },
+          backupData,
+          { 
+            upsert: true, 
+            new: true,
+            setDefaultsOnInsert: true 
+          }
+        );
+        
+        console.log(`✅ Backup saved to MongoDB for session: ${sessionId}`);
+        console.log(`   Backup ID: ${savedBackup._id}`);
+        console.log(`   Files: ${savedBackup.backupUrls.length}`);
+        
+        // Also store in wipe session for immediate access
+        if (wipeSessions.has(sessionId)) {
+          const session = wipeSessions.get(sessionId);
+          if (!session.backups) {
+            session.backups = [];
+          }
+          session.backups.push({
+            backupId: savedBackup._id,
+            urls: backupUrls,
+            savedAt: new Date().toISOString()
+          });
+          updateWipeSession(sessionId, { backups: session.backups });
+        }
+        
+      } catch (mongoError) {
+        console.error('❌ Failed to save backup to MongoDB:', mongoError.message);
+        // Continue even if MongoDB save fails
       }
     }
     
@@ -1525,11 +1688,12 @@ app.post('/api/s3/upload', async (req, res) => {
       uploaded: uploadResults.length,
       failed: errors.length,
       uploads: uploadResults,
+      backupUrls: backupUrls,
       errors: errors,
       sessionId: sessionId,
-      connection: await s3Service.checkS3Connection(),
+      username: user,
       note: uploadResults.length > 0 && uploadResults[0].isRealS3 
-        ? 'Files uploaded to AWS S3' 
+        ? 'Files uploaded to AWS S3 and saved to database' 
         : 'Files saved locally (S3 simulation mode)'
     });
     
@@ -1539,8 +1703,7 @@ app.post('/api/s3/upload', async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: 'Upload service error',
-      details: error.message,
-      code: error.code
+      details: error.message
     });
   }
 });
@@ -2265,6 +2428,415 @@ app.get('/api/user/test-data', async (req, res) => {
   }
 });
 
+// Add these endpoints to your server.js
+
+// Store certificate to S3
+app.post('/api/certificate/store', async (req, res) => {
+  try {
+    const { sessionId, username } = req.body;
+    
+    if (!sessionId || !username) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Session ID and username are required' 
+      });
+    }
+    
+    console.log(`📄 Generating and storing certificate for session: ${sessionId}`);
+    
+    // Get session data
+    let session = wipeSessions.get(sessionId);
+    if (!session) {
+      session = await loadSessionFromFile(sessionId);
+    }
+    
+    if (!session) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Session not found' 
+      });
+    }
+    
+    if (session.status !== 'completed') {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Wipe process not completed yet' 
+      });
+    }
+    
+    // Generate PDF certificate
+    const pdfBuffer = await generateCertificate(session);
+    
+    // Generate unique filename
+    const timestamp = Date.now();
+    const fileName = `certificate-${sessionId}-${timestamp}.pdf`;
+    
+    // Save PDF to temporary file
+    const tempFilePath = path.join(SESSIONS_DIR, fileName);
+    await fs.writeFile(tempFilePath, pdfBuffer);
+    
+    // Upload to S3
+    const s3Result = await s3Service.uploadToS3(tempFilePath, fileName);
+    
+    if (!s3Result.success) {
+      throw new Error('Failed to upload certificate to S3');
+    }
+    
+    // Clean up temp file
+    await fs.remove(tempFilePath);
+    
+    // Store in MongoDB
+    const sessionData = {
+      username: username,
+      sessionId: sessionId,
+      certificateUrl: s3Result.s3Url,
+      certificateFile: fileName,
+      createdAt: new Date(),
+      filesWiped: session.filesWiped || 0,
+      directoriesWiped: session.directoriesWiped || 0,
+      totalSize: session.totalSize || 0,
+      status: session.status
+    };
+    
+    // Save to MongoDB
+    const savedSession = await UserSession.findOneAndUpdate(
+      { sessionId: sessionId },
+      sessionData,
+      { 
+        upsert: true, 
+        new: true,
+        setDefaultsOnInsert: true 
+      }
+    );
+    
+    console.log(`✅ Certificate stored in S3 and MongoDB for session: ${sessionId}`);
+    
+    res.json({
+      success: true,
+      certificateUrl: s3Result.s3Url,
+      fileName: fileName,
+      mongoId: savedSession._id,
+      session: {
+        id: sessionId,
+        username: username,
+        status: session.status,
+        filesWiped: session.filesWiped || 0
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error storing certificate:', error.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to store certificate',
+      details: error.message 
+    });
+  }
+});
+
+// Store logs to S3
+app.post('/api/logs/store', async (req, res) => {
+  try {
+    const { sessionId, username } = req.body;
+    
+    if (!sessionId || !username) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Session ID and username are required' 
+      });
+    }
+    
+    console.log(`📝 Generating and storing logs for session: ${sessionId}`);
+    
+    // Get session data
+    let session = wipeSessions.get(sessionId);
+    if (!session) {
+      session = await loadSessionFromFile(sessionId);
+    }
+    
+    if (!session) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Session not found' 
+      });
+    }
+    
+    // Generate log content
+    const logContent = generateLogContent(session);
+    
+    // Generate unique filename
+    const timestamp = Date.now();
+    const fileName = `logs-${sessionId}-${timestamp}.txt`;
+    
+    // Save logs to temporary file
+    const tempFilePath = path.join(SESSIONS_DIR, fileName);
+    await fs.writeFile(tempFilePath, logContent);
+    
+    // Upload to S3
+    const s3Result = await s3Service.uploadToS3(tempFilePath, fileName);
+    
+    if (!s3Result.success) {
+      throw new Error('Failed to upload logs to S3');
+    }
+    
+    // Clean up temp file
+    await fs.remove(tempFilePath);
+    
+    // Update MongoDB
+    const updateData = {
+      logsUrl: s3Result.s3Url,
+      logsFile: fileName,
+      updatedAt: new Date()
+    };
+    
+    const updatedSession = await UserSession.findOneAndUpdate(
+      { sessionId: sessionId, username: username },
+      updateData,
+      { new: true }
+    );
+    
+    if (!updatedSession) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Session not found in database' 
+      });
+    }
+    
+    console.log(`✅ Logs stored in S3 and MongoDB for session: ${sessionId}`);
+    
+    res.json({
+      success: true,
+      logsUrl: s3Result.s3Url,
+      fileName: fileName,
+      sessionId: sessionId,
+      contentLength: logContent.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Error storing logs:', error.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to store logs',
+      details: error.message 
+    });
+  }
+});
+
+// Get certificate from S3 via MongoDB reference
+app.get('/api/certificate/download/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { username } = req.query;
+    
+    if (!username) {
+      return res.status(400).json({ 
+        error: 'Username is required' 
+      });
+    }
+    
+    // Find session in MongoDB
+    const sessionData = await UserSession.findOne({ 
+      sessionId: sessionId,
+      username: username 
+    });
+    
+    if (!sessionData) {
+      return res.status(404).json({ 
+        error: 'Certificate not found for this user' 
+      });
+    }
+    
+    if (!sessionData.certificateUrl) {
+      return res.status(404).json({ 
+        error: 'Certificate URL not available' 
+      });
+    }
+    
+    // Return the S3 URL for direct download
+    res.json({
+      success: true,
+      certificateUrl: sessionData.certificateUrl,
+      fileName: sessionData.certificateFile || `certificate-${sessionId}.pdf`,
+      sessionId: sessionId,
+      uploadedAt: sessionData.createdAt
+    });
+    
+  } catch (error) {
+    console.error('Error getting certificate:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve certificate' 
+    });
+  }
+});
+
+// Get logs from S3 via MongoDB reference
+app.get('/api/logs/download/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { username } = req.query;
+    
+    if (!username) {
+      return res.status(400).json({ 
+        error: 'Username is required' 
+      });
+    }
+    
+    // Find session in MongoDB
+    const sessionData = await UserSession.findOne({ 
+      sessionId: sessionId,
+      username: username 
+    });
+    
+    if (!sessionData) {
+      return res.status(404).json({ 
+        error: 'Logs not found for this user' 
+      });
+    }
+    
+    if (!sessionData.logsUrl) {
+      return res.status(404).json({ 
+        error: 'Logs URL not available' 
+      });
+    }
+    
+    // Return the S3 URL for direct download
+    res.json({
+      success: true,
+      logsUrl: sessionData.logsUrl,
+      fileName: sessionData.logsFile || `logs-${sessionId}.txt`,
+      sessionId: sessionId,
+      uploadedAt: sessionData.updatedAt || sessionData.createdAt
+    });
+    
+  } catch (error) {
+    console.error('Error getting logs:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve logs' 
+    });
+  }
+});
+
+// Get user sessions with S3 URLs
+app.get('/api/user/sessions/with-urls', async (req, res) => {
+  try {
+    const { username } = req.query;
+    
+    if (!username) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Username is required' 
+      });
+    }
+    
+    // Get user sessions from MongoDB
+    const sessions = await UserSession.find({ username: username })
+      .sort({ createdAt: -1 })
+      .lean();
+    
+    // Enhance with wipe session details if available
+    const enhancedSessions = sessions.map(session => {
+      const wipeSession = wipeSessions.get(session.sessionId);
+      
+      return {
+        ...session,
+        wipeDetails: wipeSession ? {
+          filesWiped: wipeSession.filesWiped,
+          directoriesWiped: wipeSession.directoriesWiped,
+          totalSize: wipeSession.totalSize,
+          status: wipeSession.status,
+          startTime: wipeSession.startTime,
+          endTime: wipeSession.endTime
+        } : null,
+        hasCertificate: !!session.certificateUrl,
+        hasLogs: !!session.logsUrl
+      };
+    });
+    
+    res.json({
+      success: true,
+      sessions: enhancedSessions,
+      count: enhancedSessions.length
+    });
+    
+  } catch (error) {
+    console.error('Error fetching user sessions:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch sessions' 
+    });
+  }
+});
+
+
+// Add this endpoint to check auto-upload status
+app.get('/api/wipe/auto-upload-status/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    // Check in memory
+    if (wipeSessions.has(sessionId)) {
+      const session = wipeSessions.get(sessionId);
+      
+      const response = {
+        sessionId,
+        status: session.status,
+        autoUploaded: session.autoUploaded || false,
+        autoUploadFailed: session.autoUploadFailed || false,
+        certificateUrl: session.certificateUrl,
+        logsUrl: session.logsUrl,
+        mongoId: session.mongoId,
+        autoUploadTime: session.autoUploadTime
+      };
+      
+      if (session.autoUploadError) {
+        response.autoUploadError = session.autoUploadError;
+      }
+      
+      return res.json(response);
+    }
+    
+    // Check in file storage
+    const session = await loadSessionFromFile(sessionId);
+    if (session) {
+      return res.json({
+        sessionId,
+        status: session.status,
+        autoUploaded: session.autoUploaded || false,
+        certificateUrl: session.certificateUrl,
+        logsUrl: session.logsUrl,
+        mongoId: session.mongoId,
+        fromFile: true
+      });
+    }
+    
+    // Check in MongoDB
+    const mongoSession = await UserSession.findOne({ sessionId: sessionId });
+    if (mongoSession) {
+      return res.json({
+        sessionId,
+        status: mongoSession.status,
+        certificateUrl: mongoSession.certificateUrl,
+        logsUrl: mongoSession.logsUrl,
+        filesWiped: mongoSession.filesWiped,
+        directoriesWiped: mongoSession.directoriesWiped,
+        fromMongoDB: true,
+        uploadedAt: mongoSession.createdAt
+      });
+    }
+    
+    res.status(404).json({ 
+      error: 'Session not found',
+      sessionId 
+    });
+    
+  } catch (error) {
+    console.error('Error checking auto-upload status:', error);
+    res.status(500).json({ 
+      error: 'Failed to check auto-upload status',
+      details: error.message 
+    });
+  }
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
