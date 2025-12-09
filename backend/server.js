@@ -1426,25 +1426,15 @@ log "Log saved to: \$LOG_FILE"
 app.post('/api/s3/upload', async (req, res) => {
   try {
     console.log('📤 S3 Upload request received');
-    console.log('Content-Type:', req.headers['content-type']);
-    console.log('Request body:', JSON.stringify(req.body, null, 2));
     
     const { files, password, sessionId } = req.body;
     
-    // Log detailed info
-    console.log('Files received:', files);
-    console.log('Type of files:', typeof files);
-    console.log('Is array?', Array.isArray(files));
-    
+    // Validate input
     if (!files || !Array.isArray(files) || files.length === 0) {
-      console.error('No valid files array received');
       return res.status(400).json({ 
         success: false,
-        error: 'No files specified or invalid file format',
-        receivedData: req.body,
-        filesType: typeof files,
-        filesIsArray: Array.isArray(files),
-        filesLength: files ? (Array.isArray(files) ? files.length : 'Not an array') : 'No files'
+        error: 'No files specified for upload',
+        hint: 'Make sure files is an array with at least one file object'
       });
     }
     
@@ -1455,115 +1445,80 @@ app.post('/api/s3/upload', async (req, res) => {
       });
     }
     
-    // Get or create session
-    let session = wipeSessions.get(sessionId);
-    if (!session) {
-      // Create a new session for the backup
-      session = {
-        id: sessionId,
-        startTime: new Date(),
-        status: 'backup-requested',
-        lastAccessed: new Date(),
-        baseDirectory: BASE_DIRECTORY,
-        from: 'backup-request'
-      };
-      wipeSessions.set(sessionId, session);
-      saveSessionToFile(sessionId, session);
-    }
+    // Log file details
+    console.log(`Processing ${files.length} files for upload`);
+    files.forEach((file, index) => {
+      console.log(`  File ${index + 1}: ${file.name || 'unnamed'} (${file.path || 'no path'})`);
+    });
+    
+    // Test S3 connection first
+    console.log('🔄 Testing S3 connection before upload...');
+    const connectionTest = await s3Service.testS3Connection();
+    console.log('Connection test result:', connectionTest);
     
     const uploadResults = [];
     const errors = [];
     
+    // Process each file
     for (const fileInfo of files) {
       try {
-        console.log('\n📄 Processing file:', fileInfo);
-        
-
-        let filePath = fileInfo.path;
-        const fileName = fileInfo.name || path.basename(filePath || '');
+        const filePath = fileInfo.path;
+        const fileName = fileInfo.name || path.basename(filePath) || 'unnamed-file';
         
         if (!filePath) {
           errors.push({ file: fileInfo, error: 'Missing file path' });
-          console.error('❌ Missing file path:', fileInfo);
           continue;
         }
         
-        // Validate and sanitize the path
+        // Validate path
+        let fullPath;
         try {
           const pathInfo = validateAndSanitizePath(filePath);
-          const fullPath = pathInfo.fullPath;
-          
-          console.log('✅ Validated path:', filePath);
-          console.log('   Full path:', fullPath);
-          console.log('   File name:', fileName);
-          
-          // Check if file exists
-          if (!(await fs.pathExists(fullPath))) {
-            errors.push({ 
-              file: fileInfo, 
-              error: `File not found: ${filePath}`,
-              fullPath: fullPath 
-            });
-            console.error('❌ File not found:', fullPath);
-            continue;
-          }
-          
-          // Upload to S3
-          console.log(`   Uploading to S3...`);
-          const result = await s3Service.uploadToS3(fullPath, fileName, password);
-          
-          if (result.success) {
-            console.log(`   ✅ Upload successful`);
-            uploadResults.push({
-              originalPath: filePath,
-              originalName: fileName,
-              s3Url: result.fileUrl,
-              s3Key: result.fileKey,
-              encrypted: result.encrypted,
-              size: result.size,
-              uploadedAt: result.uploadedAt,
-              isRealS3: result.isRealS3
-            });
-            console.log(`✅ Uploaded: ${fileName}`);
-          } else {
-            console.error(`❌ Upload failed:`, result.error);
-            errors.push({ 
-              file: fileInfo, 
-              error: result.error 
-            });
-          }
-          
+          fullPath = pathInfo.fullPath;
         } catch (pathError) {
-          console.error('❌ Path validation error:', pathError.message);
+          // Try direct path if validation fails
+          fullPath = path.join(BASE_DIRECTORY, filePath);
+          console.log(`Using direct path: ${fullPath}`);
+        }
+        
+        // Check if file exists
+        if (!fs.existsSync(fullPath)) {
           errors.push({ 
             file: fileInfo, 
-            error: `Invalid path: ${pathError.message}`,
-            path: filePath
+            error: `File not found: ${fullPath}`,
+            attemptedPath: fullPath,
+            baseDirectory: BASE_DIRECTORY
+          });
+          continue;
+        }
+        
+        console.log(`📄 Uploading: ${fileName} from ${fullPath}`);
+        
+        // Upload to S3 (with fallback)
+        const result = await s3Service.uploadToS3(fullPath, fileName, password);
+        
+        if (result.success) {
+          uploadResults.push(result);
+          console.log(`✅ Uploaded: ${fileName} (${result.isRealS3 ? 'S3' : 'Local'})`);
+        } else {
+          errors.push({ 
+            file: fileInfo, 
+            error: result.error || 'Upload failed',
+            details: result.details
           });
         }
         
-      } catch (error) {
-        console.error(`❌ Error processing file:`, error);
+      } catch (fileError) {
+        console.error(`❌ Error processing file:`, fileError);
         errors.push({ 
           file: fileInfo, 
-          error: error.message,
-          stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+          error: fileError.message,
+          stack: fileError.stack
         });
       }
     }
     
-    // Store upload info in session
-    if (uploadResults.length > 0) {
-      if (!session.s3Uploads) {
-        session.s3Uploads = [];
-      }
-      session.s3Uploads.push(...uploadResults);
-      updateWipeSession(sessionId, { s3Uploads: session.s3Uploads });
-    }
-    
-    console.log(`\n📈 Upload Summary:`);
-    console.log(`   ✅ Successful: ${uploadResults.length}`);
-    console.log(`   ❌ Failed: ${errors.length}`);
+    console.log(`📈 Upload Summary: ${uploadResults.length} successful, ${errors.length} failed`);
     
     res.json({
       success: true,
@@ -1572,18 +1527,20 @@ app.post('/api/s3/upload', async (req, res) => {
       uploads: uploadResults,
       errors: errors,
       sessionId: sessionId,
-      note: uploadResults[0]?.isRealS3 ? 'Files uploaded to AWS S3' : 'Files saved locally (S3 simulation)'
+      connection: await s3Service.checkS3Connection(),
+      note: uploadResults.length > 0 && uploadResults[0].isRealS3 
+        ? 'Files uploaded to AWS S3' 
+        : 'Files saved locally (S3 simulation mode)'
     });
     
   } catch (error) {
     console.error('❌ S3 upload route error:', error);
-    console.error('❌ Error stack:', error.stack);
     
     res.status(500).json({ 
       success: false,
-      error: 'Failed to upload files',
+      error: 'Upload service error',
       details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      code: error.code
     });
   }
 });

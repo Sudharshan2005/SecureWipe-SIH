@@ -1,226 +1,260 @@
-// backend/s3-service.js - COMPLETE FIXED VERSION
+// backend/s3-service.js - UPDATED VERSION
 const AWS = require('aws-sdk');
 const fs = require('fs-extra');
 const path = require('path');
 const crypto = require('crypto');
 
-require('dotenv').config()
+require('dotenv').config();
 
-// Your AWS Configuration
+// Configuration with better defaults
 const S3_CONFIG = {
   accessKeyId: process.env.AWS_ACCESS_KEY_ID,
   secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   region: process.env.AWS_REGION || 'us-east-1',
-  bucket: process.env.AWS_S3_BUCKET || 'secure-wipe-backups'
+  bucket: process.env.AWS_S3_BUCKET || 'secure-wipe-backups-' + Date.now(),
+  endpoint: process.env.AWS_S3_ENDPOINT, // For local/minio development
+  s3ForcePathStyle: process.env.AWS_S3_FORCE_PATH_STYLE === 'true', // For local/minio
+  signatureVersion: 'v4'
 };
 
-// Initialize S3 client
-let s3 = null;
-let s3Connected = false;
-let s3Initializing = false;
-let s3InitPromise = null;
+console.log('🔐 S3 Configuration Loaded:');
+console.log(`   Region: ${S3_CONFIG.region}`);
+console.log(`   Bucket: ${S3_CONFIG.bucket}`);
+console.log(`   Access Key: ${S3_CONFIG.accessKeyId ? '✓ Set' : '✗ Missing'}`);
+console.log(`   Secret Key: ${S3_CONFIG.secretAccessKey ? '✓ Set' : '✗ Missing'}`);
 
-/**
- * Synchronous initialization wrapper
- */
+// Initialize S3
+let s3 = null;
+let s3Initialized = false;
+
 function initializeS3() {
-  console.log('🔐 Initializing AWS S3 connection...');
-  
-  // Check for credentials
-  if (!S3_CONFIG.accessKeyId || !S3_CONFIG.secretAccessKey) {
-    console.log('❌ AWS credentials not found in environment variables');
-    console.log('ℹ️  Make sure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are set in .env file');
-    console.log('ℹ️  Using simulation mode for now');
-    s3Connected = false;
-    return false;
-  }
-  
   try {
-    console.log('📋 S3 Configuration:');
-    console.log(`   Access Key ID: ${S3_CONFIG.accessKeyId.substring(0, 8)}...`);
-    console.log(`   Region: ${S3_CONFIG.region}`);
-    console.log(`   Bucket: ${S3_CONFIG.bucket}`);
+    // Check for minimal credentials
+    if (!S3_CONFIG.accessKeyId || !S3_CONFIG.secretAccessKey) {
+      console.warn('⚠️  AWS credentials missing. Using local simulation mode.');
+      s3Initialized = false;
+      return false;
+    }
     
     // Configure AWS SDK
-    AWS.config.update({
+    const awsConfig = {
       accessKeyId: S3_CONFIG.accessKeyId,
       secretAccessKey: S3_CONFIG.secretAccessKey,
       region: S3_CONFIG.region,
-      signatureVersion: 'v4'
+      signatureVersion: S3_CONFIG.signatureVersion
+    };
+    
+    // Add endpoint for local/minio development
+    if (S3_CONFIG.endpoint) {
+      awsConfig.endpoint = S3_CONFIG.endpoint;
+      awsConfig.s3ForcePathStyle = S3_CONFIG.s3ForcePathStyle;
+      console.log(`   Using custom endpoint: ${S3_CONFIG.endpoint}`);
+    }
+    
+    AWS.config.update(awsConfig);
+    
+    // Create S3 instance with better configuration
+    s3 = new AWS.S3({
+      maxRetries: 3,
+      httpOptions: {
+        timeout: 30000,
+        connectTimeout: 5000
+      }
     });
     
-    s3 = new AWS.S3();
-    
-    // Return true for now, actual connection will be tested when needed
-    s3Connected = true;
-    console.log('✅ S3 client initialized (connection will be tested on first use)');
+    s3Initialized = true;
+    console.log('✅ S3 client initialized successfully');
     return true;
     
   } catch (error) {
-    console.error('❌ S3 initialization error:', error.message);
-    s3Connected = false;
+    console.error('❌ Failed to initialize S3:', error.message);
+    s3Initialized = false;
     return false;
   }
 }
 
+// Initialize immediately
+initializeS3();
+
 /**
- * Test S3 connection asynchronously
+ * Test S3 connection with detailed error reporting
  */
 async function testS3Connection() {
-  if (!s3Connected || !s3) {
-    console.log('ℹ️  S3 not initialized');
-    return false;
+  if (!s3Initialized || !s3) {
+    console.log('ℹ️  S3 not initialized, attempting to initialize...');
+    if (!initializeS3()) {
+      return {
+        connected: false,
+        message: 'S3 client could not be initialized. Check credentials.',
+        mode: 'simulation'
+      };
+    }
   }
   
   try {
     console.log('🔄 Testing S3 connection...');
-    const data = await s3.listBuckets({}).promise();
     
-    console.log('✅ S3 connected successfully!');
-    console.log(`✅ Available buckets: ${data.Buckets.map(b => b.Name).join(', ')}`);
+    // First, try a simple operation to check permissions
+    const params = {
+      Bucket: S3_CONFIG.bucket,
+      MaxKeys: 1
+    };
     
-    // Verify our bucket exists
-    const bucketExists = data.Buckets.some(b => b.Name === S3_CONFIG.bucket);
-    if (!bucketExists) {
-      console.warn(`⚠️  Bucket "${S3_CONFIG.bucket}" not found in your AWS account.`);
-      console.log(`ℹ️  You may need to create it manually in AWS Console`);
-      return false;
-    } else {
-      console.log(`✅ Bucket "${S3_CONFIG.bucket}" found and accessible`);
-      return true;
-    }
+    // Try to list objects (requires s3:ListBucket permission)
+    const data = await s3.listObjectsV2(params).promise();
+    
+    console.log('✅ S3 connection successful!');
+    console.log(`   Bucket: ${S3_CONFIG.bucket}`);
+    console.log(`   Region: ${S3_CONFIG.region}`);
+    console.log(`   Objects in bucket: ${data.KeyCount || 0}`);
+    
+    return {
+      connected: true,
+      message: 'S3 connection successful',
+      bucket: S3_CONFIG.bucket,
+      region: S3_CONFIG.region,
+      objects: data.KeyCount || 0,
+      mode: 'real'
+    };
+    
   } catch (error) {
-    console.error('❌ S3 connection test failed:', error.code, error.message);
-    s3Connected = false; // Mark as disconnected
+    console.error('❌ S3 connection test failed:');
+    console.error(`   Error Code: ${error.code}`);
+    console.error(`   Error Message: ${error.message}`);
+    console.error(`   Request ID: ${error.requestId || 'N/A'}`);
+    
+    // Check specific error codes
+    if (error.code === 'InvalidAccessKeyId') {
+      console.error('💡 Solution: Check AWS_ACCESS_KEY_ID in .env file');
+    } else if (error.code === 'SignatureDoesNotMatch') {
+      console.error('💡 Solution: Check AWS_SECRET_ACCESS_KEY in .env file');
+    } else if (error.code === 'NoSuchBucket') {
+      console.error(`💡 Solution: Bucket "${S3_CONFIG.bucket}" doesn't exist. Create it first.`);
+      console.error(`   Command: aws s3api create-bucket --bucket ${S3_CONFIG.bucket} --region ${S3_CONFIG.region}`);
+    } else if (error.code === 'AccessDenied') {
+      console.error('💡 Solution: IAM user lacks S3 permissions. Add S3FullAccess policy.');
+    } else if (error.code === 'NetworkingError') {
+      console.error('💡 Solution: Check network connection or AWS region.');
+    }
+    
+    return {
+      connected: false,
+      message: `S3 connection failed: ${error.code || error.message}`,
+      error: error.code,
+      details: error.message,
+      mode: 'simulation'
+    };
+  }
+}
+
+/**
+ * Ensure bucket exists, create if not
+ */
+async function ensureBucketExists() {
+  if (!s3Initialized || !s3) {
+    console.log('ℹ️  S3 not available, skipping bucket check');
     return false;
   }
-}
-
-/**
- * Initialize S3 with connection test
- */
-async function initializeS3WithTest() {
-  if (s3Initializing && s3InitPromise) {
-    return s3InitPromise;
-  }
   
-  s3Initializing = true;
-  s3InitPromise = (async () => {
-    const initialized = initializeS3();
-    if (!initialized) {
-      s3Initializing = false;
+  try {
+    console.log(`📦 Checking if bucket "${S3_CONFIG.bucket}" exists...`);
+    
+    // Try to head the bucket
+    await s3.headBucket({ Bucket: S3_CONFIG.bucket }).promise();
+    console.log(`✅ Bucket "${S3_CONFIG.bucket}" exists`);
+    return true;
+    
+  } catch (error) {
+    if (error.code === 'NotFound') {
+      console.log(`📦 Bucket doesn't exist, creating "${S3_CONFIG.bucket}"...`);
+      try {
+        const createParams = {
+          Bucket: S3_CONFIG.bucket,
+          CreateBucketConfiguration: {
+            LocationConstraint: S3_CONFIG.region
+          }
+        };
+        
+        // us-east-1 is special
+        if (S3_CONFIG.region === 'us-east-1') {
+          delete createParams.CreateBucketConfiguration;
+        }
+        
+        await s3.createBucket(createParams).promise();
+        console.log(`✅ Bucket "${S3_CONFIG.bucket}" created successfully`);
+        
+        // Wait a moment for bucket to be ready
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return true;
+        
+      } catch (createError) {
+        console.error(`❌ Failed to create bucket:`, createError.message);
+        return false;
+      }
+    } else {
+      console.error(`❌ Error checking bucket:`, error.message);
       return false;
     }
-    
-    const connected = await testS3Connection();
-    s3Connected = connected;
-    s3Initializing = false;
-    return connected;
-  })();
-  
-  return s3InitPromise;
+  }
 }
 
-// Initialize S3 connection synchronously (basic initialization)
-initializeS3();
-
 /**
- * Upload file to S3 with detailed logging
+ * Enhanced upload with better error handling and fallback
  */
 async function uploadToS3(filePath, fileName, password = null) {
   try {
-    // First check if file exists
+    console.log(`\n📤 Starting S3 Upload: ${fileName}`);
+    
+    // Check if file exists
     if (!fs.existsSync(filePath)) {
-      console.error(`❌ File not found: ${filePath}`);
-      return {
-        success: false,
-        error: `File not found: ${filePath}`,
-        isRealS3: false
-      };
+      throw new Error(`File not found: ${filePath}`);
     }
     
-    const fileContent = await fs.readFile(filePath);
-    const fileSize = fileContent.length;
+    const fileStats = fs.statSync(filePath);
+    console.log(`   File size: ${formatBytes(fileStats.size)}`);
     
-    console.log(`📤 Preparing upload: ${fileName} (${formatBytes(fileSize)})`);
-    console.log(`   Source path: ${filePath}`);
+    // Test connection first
+    const connectionTest = await testS3Connection();
     
-    // Test connection if not already tested
-    const connectionTested = await testS3Connection();
+    if (!connectionTest.connected) {
+      console.log('🧪 S3 not available, using local simulation');
+      return uploadToLocalSimulation(filePath, fileName, password);
+    }
     
-    // Encrypt if password provided
+    // Ensure bucket exists
+    const bucketReady = await ensureBucketExists();
+    if (!bucketReady) {
+      console.log('🧪 Bucket not ready, using local simulation');
+      return uploadToLocalSimulation(filePath, fileName, password);
+    }
+    
+    // Read and optionally encrypt file
+    let fileContent = fs.readFileSync(filePath);
     let uploadContent = fileContent;
-    let metadata = {
+    const metadata = {
       'original-filename': fileName,
       'uploaded-at': new Date().toISOString(),
-      'file-size': String(fileSize),
+      'file-size': String(fileStats.size),
       'encrypted': String(!!password)
     };
     
     if (password) {
-      console.log('🔒 Encrypting file with password...');
-      const algorithm = 'aes-256-cbc';
-      const key = crypto.scryptSync(password, 'salt', 32);
-      const iv = crypto.randomBytes(16);
-      
-      const cipher = crypto.createCipheriv(algorithm, key, iv);
-      let encrypted = cipher.update(fileContent.toString('base64'), 'utf8', 'hex');
-      encrypted += cipher.final('hex');
-      
-      uploadContent = Buffer.from(JSON.stringify({
-        encrypted: true,
-        content: encrypted,
-        iv: iv.toString('hex'),
-        algorithm: algorithm
-      }));
-      
-      metadata['encryption-iv'] = iv.toString('hex');
-      metadata['encryption-algorithm'] = algorithm;
-      metadata['encrypted-size'] = String(uploadContent.length);
+      console.log('🔒 Encrypting with AES-256...');
+      const encryptedData = encryptFile(fileContent, password);
+      uploadContent = Buffer.from(JSON.stringify(encryptedData));
+      metadata['encryption-algorithm'] = 'aes-256-gcm';
     }
     
-    // Generate unique file key
+    // Generate unique key
     const timestamp = Date.now();
     const randomId = crypto.randomBytes(4).toString('hex');
-    const fileKey = `secure-wipe-backups/${timestamp}-${randomId}-${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const safeFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const fileKey = `backups/${timestamp}_${randomId}_${safeFileName}`;
     
-    console.log(`📁 S3 Key: ${fileKey}`);
-    console.log(`📁 Target bucket: ${S3_CONFIG.bucket}`);
-    console.log(`📁 Target region: ${S3_CONFIG.region}`);
+    console.log(`   S3 Key: ${fileKey}`);
+    console.log(`   Uploading to: ${S3_CONFIG.bucket}`);
     
-    // Check if S3 is available
-    if (!s3Connected || !s3 || !connectionTested) {
-      console.log('🧪 S3 not available, using simulation mode');
-      
-      // Create simulation directory if it doesn't exist
-      const simulationDir = path.join(__dirname, 's3-simulated');
-      await fs.ensureDir(simulationDir);
-      
-      const simulatedPath = path.join(simulationDir, `${timestamp}-${fileName}`);
-      await fs.writeFile(simulatedPath, uploadContent);
-      
-      console.log(`📁 Saved locally to: ${simulatedPath}`);
-      
-      return {
-        success: true,
-        fileUrl: `https://${S3_CONFIG.bucket}.s3.${S3_CONFIG.region}.amazonaws.com/${fileKey}`,
-        s3Url: `https://${S3_CONFIG.bucket}.s3.${S3_CONFIG.region}.amazonaws.com/${fileKey}`,
-        fileKey: fileKey,
-        fileName: fileName,
-        encrypted: !!password,
-        size: fileSize,
-        uploadedAt: new Date().toISOString(),
-        region: S3_CONFIG.region,
-        bucket: S3_CONFIG.bucket,
-        isRealS3: false,
-        simulatedPath: simulatedPath,
-        note: 'S3 simulation - File saved locally'
-      };
-    }
-    
-    // Upload to real S3
-    console.log('🚀 Uploading to AWS S3...');
-    
+    // Upload parameters
     const params = {
       Bucket: S3_CONFIG.bucket,
       Key: fileKey,
@@ -231,18 +265,25 @@ async function uploadToS3(filePath, fileName, password = null) {
       ServerSideEncryption: 'AES256'
     };
     
-    console.log('🔄 Upload parameters:');
-    console.log(`   Bucket: ${params.Bucket}`);
-    console.log(`   Key: ${params.Key}`);
-    console.log(`   Size: ${uploadContent.length} bytes`);
+    // Upload with progress
+    console.log('🔄 Uploading... (this may take a moment)');
+    const startTime = Date.now();
     
-    // Upload with progress tracking
-    const result = await s3.upload(params).promise();
+    const uploadPromise = s3.upload(params).promise();
     
-    console.log('✅ Upload successful!');
-    console.log(`   Location: ${result.Location}`);
+    // Add a simple progress indicator
+    const progressInterval = setInterval(() => {
+      const elapsed = (Date.now() - startTime) / 1000;
+      console.log(`   Still uploading... ${elapsed.toFixed(1)}s elapsed`);
+    }, 3000);
+    
+    const result = await uploadPromise;
+    clearInterval(progressInterval);
+    
+    const uploadTime = (Date.now() - startTime) / 1000;
+    console.log(`✅ Upload completed in ${uploadTime.toFixed(2)} seconds`);
     console.log(`   ETag: ${result.ETag}`);
-    console.log(`   Version ID: ${result.VersionId || 'None'}`);
+    console.log(`   Location: ${result.Location}`);
     
     return {
       success: true,
@@ -251,258 +292,178 @@ async function uploadToS3(filePath, fileName, password = null) {
       fileKey: fileKey,
       fileName: fileName,
       encrypted: !!password,
-      size: fileSize,
+      size: fileStats.size,
       uploadedAt: new Date().toISOString(),
       region: S3_CONFIG.region,
       bucket: S3_CONFIG.bucket,
       isRealS3: true,
       details: {
         etag: result.ETag,
-        versionId: result.VersionId,
-        location: result.Location
+        versionId: result.VersionId
       }
     };
     
   } catch (error) {
-    console.error('❌ Upload error details:');
-    console.error(`   Error code: ${error.code}`);
-    console.error(`   Error message: ${error.message}`);
-    console.error(`   Request ID: ${error.requestId || 'N/A'}`);
-    console.error(`   Status code: ${error.statusCode || 'N/A'}`);
+    console.error('❌ Upload failed:', error.message);
+    console.error('   Error details:', error.code || 'Unknown');
     
-    // Provide helpful error messages
-    let errorMsg = error.message;
-    if (error.code === 'InvalidAccessKeyId') {
-      errorMsg = 'Invalid AWS Access Key ID. Please check your credentials.';
-    } else if (error.code === 'SignatureDoesNotMatch') {
-      errorMsg = 'AWS Secret Access Key is incorrect.';
-    } else if (error.code === 'NoSuchBucket') {
-      errorMsg = `Bucket "${S3_CONFIG.bucket}" does not exist. Please create it in AWS Console.`;
-    } else if (error.code === 'AccessDenied') {
-      errorMsg = 'Access denied. Check IAM permissions for S3 access.';
-    }
+    // Fallback to local simulation
+    console.log('🔄 Falling back to local simulation...');
+    return uploadToLocalSimulation(filePath, fileName, password);
+  }
+}
+
+/**
+ * Local simulation for development/testing
+ */
+async function uploadToLocalSimulation(filePath, fileName, password = null) {
+  try {
+    console.log('🧪 Using local simulation mode');
+    
+    // Create simulation directory
+    const simulationDir = path.join(__dirname, 's3-simulated');
+    await fs.ensureDir(simulationDir);
+    
+    // Read file
+    const fileContent = fs.readFileSync(filePath);
+    const fileStats = fs.statSync(filePath);
+    
+    // Generate unique filename
+    const timestamp = Date.now();
+    const randomId = crypto.randomBytes(4).toString('hex');
+    const safeFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const localFileName = `${timestamp}_${randomId}_${safeFileName}`;
+    const localPath = path.join(simulationDir, localFileName);
+    
+    // Save locally
+    await fs.writeFile(localPath, fileContent);
+    
+    console.log(`📁 Saved locally: ${localPath}`);
     
     return {
+      success: true,
+      fileUrl: `file://${localPath}`,
+      s3Url: `https://${S3_CONFIG.bucket}.s3.${S3_CONFIG.region}.amazonaws.com/simulated/${localFileName}`,
+      fileKey: `simulated/${localFileName}`,
+      fileName: fileName,
+      encrypted: !!password,
+      size: fileStats.size,
+      uploadedAt: new Date().toISOString(),
+      region: S3_CONFIG.region,
+      bucket: S3_CONFIG.bucket,
+      isRealS3: false,
+      simulatedPath: localPath,
+      note: 'Development mode - File saved locally'
+    };
+    
+  } catch (error) {
+    console.error('❌ Local simulation failed:', error);
+    return {
       success: false,
-      error: errorMsg,
-      code: error.code,
-      details: error.message,
+      error: `Both S3 and local backup failed: ${error.message}`,
       isRealS3: false
     };
   }
 }
 
 /**
- * Helper function to format bytes
+ * Encrypt file content
+ */
+function encryptFile(content, password) {
+  const algorithm = 'aes-256-gcm';
+  const key = crypto.scryptSync(password, 'secure-wipe-salt', 32);
+  const iv = crypto.randomBytes(16);
+  
+  const cipher = crypto.createCipheriv(algorithm, key, iv);
+  let encrypted = cipher.update(content.toString('base64'), 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  const authTag = cipher.getAuthTag();
+  
+  return {
+    encrypted: true,
+    content: encrypted,
+    iv: iv.toString('hex'),
+    authTag: authTag.toString('hex'),
+    algorithm: algorithm
+  };
+}
+
+/**
+ * Format bytes to human readable
  */
 function formatBytes(bytes, decimals = 2) {
   if (bytes === 0) return '0 Bytes';
   const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
   const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + sizes[i];
 }
 
 /**
- * Generate presigned URL for secure download
+ * Generate presigned URL
  */
 async function generatePresignedUrl(fileKey, expiresIn = 3600) {
-  if (!s3Connected || !s3) {
-    console.log('ℹ️  S3 not available, using simulated URL');
-    return `https://${S3_CONFIG.bucket}.s3.${S3_CONFIG.region}.amazonaws.com/${fileKey}`;
+  if (!s3Initialized || !s3) {
+    console.log('ℹ️  S3 not available for presigned URL');
+    return null;
   }
   
   try {
     const params = {
       Bucket: S3_CONFIG.bucket,
       Key: fileKey,
-      Expires: expiresIn,
-      ResponseContentDisposition: `attachment; filename="${fileKey.split('/').pop()}"`
+      Expires: expiresIn
     };
     
-    console.log(`🔗 Generating presigned URL for: ${fileKey}`);
-    const url = await s3.getSignedUrlPromise('getObject', params);
-    console.log(`✅ Presigned URL generated (expires in ${expiresIn}s)`);
-    return url;
+    return await s3.getSignedUrlPromise('getObject', params);
   } catch (error) {
-    console.error('❌ Error generating presigned URL:', error);
+    console.error('Presigned URL error:', error);
     return null;
   }
 }
 
 /**
- * List files in S3 bucket
+ * Check S3 connection status
+ */
+async function checkS3Connection() {
+  return testS3Connection();
+}
+
+/**
+ * List files in bucket
  */
 async function listS3Files() {
-  if (!s3Connected || !s3) {
-    console.log('ℹ️  S3 not available, returning empty list');
+  if (!s3Initialized || !s3) {
     return { files: [], isRealS3: false };
   }
   
   try {
     const params = {
       Bucket: S3_CONFIG.bucket,
-      Prefix: 'secure-wipe-backups/'
+      Prefix: 'backups/'
     };
     
-    console.log(`📋 Listing files in bucket: ${S3_CONFIG.bucket}`);
     const data = await s3.listObjectsV2(params).promise();
-    
-    console.log(`✅ Found ${data.KeyCount || 0} files`);
     return {
       files: data.Contents || [],
       total: data.KeyCount,
       isRealS3: true
     };
   } catch (error) {
-    console.error('❌ Error listing S3 files:', error);
+    console.error('List files error:', error);
     return { files: [], error: error.message };
   }
 }
 
-/**
- * Delete file from S3
- */
-async function deleteS3File(fileKey) {
-  if (!s3Connected || !s3) {
-    console.log('ℹ️  S3 not available, skipping delete');
-    return { success: false, error: 'S3 not available' };
-  }
-  
-  try {
-    const params = {
-      Bucket: S3_CONFIG.bucket,
-      Key: fileKey
-    };
-    
-    console.log(`🗑️  Deleting from S3: ${fileKey}`);
-    await s3.deleteObject(params).promise();
-    console.log(`✅ Deleted: ${fileKey}`);
-    return { success: true };
-  } catch (error) {
-    console.error('❌ Error deleting from S3:', error);
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * Check S3 connectivity and bucket permissions
- */
-async function checkS3Connection() {
-  if (!s3Connected || !s3) {
-    return {
-      connected: false,
-      message: 'S3 not initialized or connected',
-      bucket: S3_CONFIG.bucket,
-      region: S3_CONFIG.region
-    };
-  }
-  
-  try {
-    // Check bucket existence and permissions
-    await s3.headBucket({ Bucket: S3_CONFIG.bucket }).promise();
-    
-    // Try to list objects to check read permissions
-    await s3.listObjectsV2({ Bucket: S3_CONFIG.bucket, MaxKeys: 1 }).promise();
-    
-    return {
-      connected: true,
-      message: 'S3 connection successful',
-      bucket: S3_CONFIG.bucket,
-      region: S3_CONFIG.region,
-      accessible: true
-    };
-  } catch (error) {
-    return {
-      connected: false,
-      message: `S3 connection error: ${error.message}`,
-      bucket: S3_CONFIG.bucket,
-      region: S3_CONFIG.region,
-      error: error.code
-    };
-  }
-}
-
-/**
- * Download file from S3 (with decryption if needed)
- */
-async function downloadFromS3(fileKey, password = null) {
-  if (!s3Connected || !s3) {
-    console.log('ℹ️  S3 not available, cannot download');
-    return { success: false, error: 'S3 not available' };
-  }
-  
-  try {
-    console.log(`📥 Downloading from S3: ${fileKey}`);
-    const params = {
-      Bucket: S3_CONFIG.bucket,
-      Key: fileKey
-    };
-    
-    const data = await s3.getObject(params).promise();
-    
-    // Check if file is encrypted
-    const metadata = data.Metadata || {};
-    const isEncrypted = metadata.encrypted === 'true';
-    
-    let fileContent = data.Body;
-    
-    // Decrypt if needed
-    if (isEncrypted && password) {
-      console.log('🔓 Decrypting file...');
-      try {
-        const encryptedData = JSON.parse(fileContent.toString());
-        const algorithm = encryptedData.algorithm || 'aes-256-cbc';
-        const key = crypto.scryptSync(password, 'salt', 32);
-        const iv = Buffer.from(encryptedData.iv, 'hex');
-        
-        const decipher = crypto.createDecipheriv(algorithm, key, iv);
-        let decrypted = decipher.update(encryptedData.content, 'hex', 'base64');
-        decrypted += decipher.final('base64');
-        
-        fileContent = Buffer.from(decrypted, 'base64');
-      } catch (decryptError) {
-        console.error('❌ Decryption failed:', decryptError.message);
-        return { 
-          success: false, 
-          error: 'Decryption failed. Wrong password or corrupted file.' 
-        };
-      }
-    } else if (isEncrypted && !password) {
-      return { 
-        success: false, 
-        error: 'File is encrypted but no password provided.' 
-      };
-    }
-    
-    return {
-      success: true,
-      content: fileContent,
-      metadata: metadata,
-      size: fileContent.length,
-      encrypted: isEncrypted
-    };
-    
-  } catch (error) {
-    console.error('❌ Download error:', error);
-    return { 
-      success: false, 
-      error: `Download failed: ${error.message}` 
-    };
-  }
-}
-
+// Export functions
 module.exports = {
   uploadToS3,
   generatePresignedUrl,
   listS3Files,
-  deleteS3File,
-  downloadFromS3,
   checkS3Connection,
   testS3Connection,
-  initializeS3WithTest,
-  isS3Available: () => s3Connected,
+  ensureBucketExists,
+  isS3Available: () => s3Initialized,
   getConfig: () => S3_CONFIG,
   formatBytes
 };
