@@ -203,10 +203,11 @@ export default function Dashboard() {
       
       // Find session to get certificate URL
       const session = sessions.find(s => s.sessionId === sessionId);
+      console.log(session);
       
-      if (session?.certificate) {
+      if (session?.certificateUrl) {
         // Download from S3 URL
-        window.open(session.certificate, '_blank');
+        window.open(session.certificateUrl, '_blank');
       } else {
         // Fallback to API-generated certificate
         const response = await axios.get(
@@ -242,9 +243,9 @@ export default function Dashboard() {
       // Find session to get logs URL
       const session = sessions.find(s => s.sessionId === sessionId);
       
-      if (session?.logs) {
+      if (session?.logsUrl) {
         // Download from S3 URL
-        window.open(session.logs, '_blank');
+        window.open(session.logsUrl, '_blank');
       } else {
         // Fallback to API-generated logs
         const response = await axios.get(
